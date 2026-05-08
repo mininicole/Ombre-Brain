@@ -1471,6 +1471,99 @@ async def api_recall(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/reclassify", methods=["POST"])
+async def api_reclassify(request):
+    """重新打标所有"未分类"且名字=hex_id 的桶（之前打标失败的）。
+    Body: {"limit": 10, "domain_filter": "未分类"}（都可选）"""
+    from starlette.responses import JSONResponse
+    try:
+        body = await request.json() if request.method == "POST" else {}
+    except Exception:
+        body = {}
+    limit = int(body.get("limit", 100))
+    domain_filter = body.get("domain_filter", "未分类")
+
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        return JSONResponse({"error": f"list_all failed: {e}"}, status_code=500)
+
+    targets = []
+    for b in all_buckets:
+        meta = b.get("metadata", {})
+        domain = meta.get("domain") or []
+        if isinstance(domain, str):
+            domain = [domain]
+        # 必须未分类 + name=id
+        is_unclassified = domain_filter in domain or domain == [] or domain == [domain_filter]
+        name = meta.get("name", "")
+        if is_unclassified and (not name or name == b["id"]):
+            targets.append(b)
+
+    targets = targets[:limit]
+    fixed = 0
+    skipped = 0
+    failed = 0
+
+    for b in targets:
+        bid = b["id"]
+        content = b.get("content", "")
+        if not content.strip():
+            skipped += 1
+            continue
+        try:
+            analysis = await dehydrator.analyze(content)
+            updates = {}
+            if analysis.get("domain"):
+                updates["domain"] = analysis["domain"]
+            if analysis.get("tags"):
+                updates["tags"] = analysis["tags"]
+            if analysis.get("suggested_name"):
+                updates["name"] = analysis["suggested_name"]
+            if "valence" in analysis and 0 <= analysis["valence"] <= 1:
+                updates["valence"] = analysis["valence"]
+            if "arousal" in analysis and 0 <= analysis["arousal"] <= 1:
+                updates["arousal"] = analysis["arousal"]
+            if updates:
+                ok = await bucket_mgr.update(bid, **updates)
+                if ok:
+                    fixed += 1
+                else:
+                    failed += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            logger.warning(f"reclassify {bid} failed: {e}")
+            failed += 1
+
+    return JSONResponse({
+        "candidates": len(targets),
+        "fixed": fixed,
+        "skipped": skipped,
+        "failed": failed,
+    })
+
+
+@mcp.custom_route("/api/forget/{bucket_id}", methods=["POST", "DELETE"])
+async def api_forget(request):
+    """删除一条记忆。POST or DELETE /api/forget/{bucket_id}"""
+    from starlette.responses import JSONResponse
+    bucket_id = request.path_params.get("bucket_id", "").strip()
+    if not bucket_id:
+        return JSONResponse({"error": "missing bucket_id"}, status_code=400)
+    try:
+        success = await bucket_mgr.delete(bucket_id)
+        if success:
+            try:
+                embedding_engine.delete_embedding(bucket_id)
+            except Exception:
+                pass
+        return JSONResponse({"ok": bool(success), "id": bucket_id})
+    except Exception as e:
+        logger.error(f"/api/forget failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/api/remember", methods=["POST"])
 async def api_remember(request):
     """Store a memory. POST body: {"content": "...", "feel": false, "importance": 5}
@@ -1485,6 +1578,7 @@ async def api_remember(request):
             content=content,
             feel=bool(body.get("feel", False)),
             importance=int(body.get("importance", 5)),
+            pinned=bool(body.get("pinned", False)),
             valence=float(body.get("valence", -1)),
             arousal=float(body.get("arousal", -1)),
             tags=str(body.get("tags", "")),
