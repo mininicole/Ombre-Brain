@@ -13,10 +13,10 @@ primary_region = 'nrt'
 [http_service]
   internal_port = 8000
   force_https = true
-  # 不挂起：Evan 主动查询时需要立刻响应，wake-up 延迟会让对话变卡
-  auto_stop_machines = 'off'
+  # 挂起模式：闲时省钱，请求进来时 Fly 自动唤醒（首次响应慢 1-2s）
+  auto_stop_machines = 'suspend'
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0
 
   [[http_service.checks]]
     interval = '60s'
