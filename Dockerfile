@@ -18,7 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files / 复制项目文件
 COPY *.py .
 COPY dashboard.html .
-COPY config.example.yaml ./config.yaml
+# 优先用本地 config.yaml（自定义），否则回退到 example
+COPY config.yaml ./config.yaml
 
 # Persistent mount point: bucket data
 # 持久化挂载点：记忆数据

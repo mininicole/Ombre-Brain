@@ -1446,6 +1446,56 @@ async def api_import_review(request):
     return JSONResponse({"applied": applied, "errors": errors})
 
 
+# =============================================================
+# Simple HTTP API for non-MCP clients (e.g. Evan Telegram bot)
+# 给非 MCP 客户端用的简单 HTTP 接口
+# =============================================================
+@mcp.custom_route("/api/recall", methods=["POST"])
+async def api_recall(request):
+    """Query memories. POST body: {"query": "...", "max_tokens": 2000, "max_results": 5}
+    Returns: {"text": "formatted memory string"}"""
+    from starlette.responses import JSONResponse
+    try:
+        body = await request.json()
+        query = (body.get("query") or "").strip()
+        max_tokens = int(body.get("max_tokens", 2000))
+        max_results = int(body.get("max_results", 5))
+        result = await breath(
+            query=query,
+            max_tokens=max_tokens,
+            max_results=max_results,
+        )
+        return JSONResponse({"text": result})
+    except Exception as e:
+        logger.error(f"/api/recall failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/remember", methods=["POST"])
+async def api_remember(request):
+    """Store a memory. POST body: {"content": "...", "feel": false, "importance": 5}
+    Returns: {"id": "bucket_id"}"""
+    from starlette.responses import JSONResponse
+    try:
+        body = await request.json()
+        content = (body.get("content") or "").strip()
+        if not content:
+            return JSONResponse({"error": "content empty"}, status_code=400)
+        result = await hold(
+            content=content,
+            feel=bool(body.get("feel", False)),
+            importance=int(body.get("importance", 5)),
+            valence=float(body.get("valence", -1)),
+            arousal=float(body.get("arousal", -1)),
+            tags=str(body.get("tags", "")),
+            source_bucket=str(body.get("source_bucket", "")),
+        )
+        return JSONResponse({"id": result})
+    except Exception as e:
+        logger.error(f"/api/remember failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # --- Entry point / 启动入口 ---
 if __name__ == "__main__":
     transport = config.get("transport", "stdio")

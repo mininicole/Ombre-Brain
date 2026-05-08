@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.git/
+.github/
+.claude/
+.vscode/
+buckets/
+backup_*/
+*.log
+server.log
+*.db
+import_state.json
+node_modules/
