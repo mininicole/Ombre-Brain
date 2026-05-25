@@ -1599,6 +1599,32 @@ if __name__ == "__main__":
         import threading
         import uvicorn
         from starlette.middleware.cors import CORSMiddleware
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.responses import JSONResponse
+
+        # --- Bearer token auth middleware ---
+        # --- Bearer token 鉴权中间件 ---
+        # If OMBRE_AUTH_TOKEN env var is set, all requests except /health must
+        # include "Authorization: Bearer <token>". If unset, auth is disabled
+        # (backward compat — but server will log a warning).
+        # 设置 OMBRE_AUTH_TOKEN 环境变量后，除 /health 外所有请求都必须带
+        # "Authorization: Bearer <token>"。未设置则不强制（向后兼容，但会警告）。
+        OMBRE_AUTH_TOKEN = os.environ.get("OMBRE_AUTH_TOKEN", "").strip()
+        PUBLIC_PATHS = {"/health"}
+
+        class BearerAuthMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                if request.url.path in PUBLIC_PATHS:
+                    return await call_next(request)
+                if not OMBRE_AUTH_TOKEN:
+                    return await call_next(request)
+                auth_header = request.headers.get("Authorization", "")
+                if not auth_header.startswith("Bearer "):
+                    return JSONResponse({"error": "unauthorized"}, status_code=401)
+                provided = auth_header[7:].strip()
+                if provided != OMBRE_AUTH_TOKEN:
+                    return JSONResponse({"error": "unauthorized"}, status_code=401)
+                return await call_next(request)
 
         # --- Application-level keepalive: ping /health every 60s ---
         # --- 应用层保活：每 60 秒 ping 一次 /health，防止 Cloudflare Tunnel 空闲断连 ---
@@ -1634,6 +1660,15 @@ if __name__ == "__main__":
             expose_headers=["*"],
         )
         logger.info("CORS middleware enabled for remote transport / 已启用 CORS 中间件")
+
+        # Apply auth middleware after CORS so preflight requests pass through
+        # 鉴权中间件加在 CORS 之后，让 OPTIONS 预检请求能通过
+        _app.add_middleware(BearerAuthMiddleware)
+        if OMBRE_AUTH_TOKEN:
+            logger.info(f"🔒 Bearer auth ENABLED (token length: {len(OMBRE_AUTH_TOKEN)}) / 鉴权已启用")
+        else:
+            logger.warning("⚠️  Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
+
         uvicorn.run(_app, host="0.0.0.0", port=8000)
     else:
         mcp.run(transport=transport)
