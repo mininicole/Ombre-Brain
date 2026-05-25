@@ -2086,11 +2086,16 @@ if __name__ == "__main__":
                     return await call_next(request)
                 if not OMBRE_AUTH_TOKEN:
                     return await call_next(request)
+                # Accept token via Authorization header OR ?token=xxx query param
+                # 同时支持 Header 和 URL query 两种方式传 token,后者用于无法设置自定义
+                # header 的客户端(例如 Anthropic Web/iOS Connectors 对话框)
+                provided = ""
                 auth_header = request.headers.get("Authorization", "")
-                if not auth_header.startswith("Bearer "):
-                    return JSONResponse({"error": "unauthorized"}, status_code=401)
-                provided = auth_header[7:].strip()
-                if provided != OMBRE_AUTH_TOKEN:
+                if auth_header.startswith("Bearer "):
+                    provided = auth_header[7:].strip()
+                elif "token" in request.query_params:
+                    provided = request.query_params["token"].strip()
+                if not provided or provided != OMBRE_AUTH_TOKEN:
                     return JSONResponse({"error": "unauthorized"}, status_code=401)
                 return await call_next(request)
 
