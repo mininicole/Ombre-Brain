@@ -98,6 +98,26 @@ def load_config(config_path: str = None) -> dict:
     if env_buckets_dir:
         config["buckets_dir"] = env_buckets_dir
 
+    # OMBRE_DEHYDRATION_MODEL (with OMBRE_MODEL alias) overrides dehydration.model
+    env_dehy_model = os.environ.get("OMBRE_DEHYDRATION_MODEL", "") or os.environ.get("OMBRE_MODEL", "")
+    if env_dehy_model:
+        config.setdefault("dehydration", {})["model"] = env_dehy_model
+
+    # OMBRE_DEHYDRATION_BASE_URL overrides dehydration.base_url
+    env_dehy_base_url = os.environ.get("OMBRE_DEHYDRATION_BASE_URL", "")
+    if env_dehy_base_url:
+        config.setdefault("dehydration", {})["base_url"] = env_dehy_base_url
+
+    # OMBRE_EMBEDDING_MODEL overrides embedding.model
+    env_embed_model = os.environ.get("OMBRE_EMBEDDING_MODEL", "")
+    if env_embed_model:
+        config.setdefault("embedding", {})["model"] = env_embed_model
+
+    # OMBRE_EMBEDDING_BASE_URL overrides embedding.base_url
+    env_embed_base_url = os.environ.get("OMBRE_EMBEDDING_BASE_URL", "")
+    if env_embed_base_url:
+        config.setdefault("embedding", {})["base_url"] = env_embed_base_url
+
     # --- Ensure bucket storage directories exist ---
     # --- 确保记忆桶存储目录存在 ---
     buckets_dir = config["buckets_dir"]

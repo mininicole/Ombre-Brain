@@ -607,6 +607,7 @@
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="搜索记忆…" />
   </div>
+  <button onclick="doLogout()" title="退出登录" style="margin-left:12px;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;">退出</button>
 </div>
 
 <div class="tabs">
@@ -615,6 +616,7 @@
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
   <div class="tab" data-tab="import">导入</div>
+  <div class="tab" data-tab="settings">设置</div>
 </div>
 
 <div class="content" id="list-view">
@@ -778,7 +780,259 @@
   <div id="detail-content"></div>
 </div>
 
+<!-- Settings Tab View -->
+<div class="content" id="settings-view" style="display:none">
+  <div style="max-width:580px;margin:0 auto;">
+
+    <div class="config-section">
+      <h3>服务状态</h3>
+      <div id="settings-status" style="font-size:13px;color:var(--text-dim);line-height:2;">加载中…</div>
+      <button onclick="loadSettingsStatus()" style="margin-top:8px;font-size:12px;padding:4px 12px;">刷新状态</button>
+    </div>
+
+    <div class="config-section">
+      <h3>修改密码</h3>
+      <div id="settings-env-notice" style="display:none;font-size:12px;color:var(--warning);margin-bottom:10px;">
+        ⚠ 当前使用环境变量 OMBRE_DASHBOARD_PASSWORD，请直接修改环境变量。
+      </div>
+      <div id="settings-pwd-form">
+        <div class="config-row">
+          <label>当前密码</label>
+          <input type="password" id="settings-current-pwd" placeholder="当前密码" />
+        </div>
+        <div class="config-row">
+          <label>新密码</label>
+          <input type="password" id="settings-new-pwd" placeholder="新密码（至少6位）" />
+        </div>
+        <div class="config-row">
+          <label>确认新密码</label>
+          <input type="password" id="settings-new-pwd2" placeholder="再次输入新密码" />
+        </div>
+        <button class="btn-primary" onclick="changePassword()" style="margin-top:4px;">修改密码</button>
+        <div id="settings-pwd-msg" style="margin-top:10px;font-size:13px;"></div>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <h3>宿主机记忆桶目录 (Docker)</h3>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.6;">
+        设置 docker-compose 中 <code>${OMBRE_HOST_VAULT_DIR:-./buckets}:/data</code> 的宿主机路径。
+        留空则使用项目内 <code>./buckets</code>。
+        <span style="color:var(--warning);">⚠ 修改后需在宿主机执行 <code>docker compose down && docker compose up -d</code> 才会生效。</span>
+      </div>
+      <div class="config-row">
+        <label>路径</label>
+        <input type="text" id="settings-host-vault" placeholder="例如 /Users/you/Obsidian/Ombre Brain" style="flex:1;" />
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+        <button class="btn-primary" onclick="saveHostVault()">保存到 .env</button>
+        <button onclick="loadHostVault()" style="font-size:12px;padding:4px 12px;">重新加载</button>
+        <span id="settings-host-vault-msg" style="font-size:12px;"></span>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <h3>账号操作</h3>
+      <button onclick="doLogout()" style="color:var(--negative);border-color:var(--negative);">退出登录</button>
+    </div>
+
+  </div>
+</div>
+
+<!-- Auth Overlay -->
+<div id="auth-overlay" style="position:fixed;inset:0;z-index:9999;background:var(--bg-gradient);background-attachment:fixed;display:flex;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:24px;padding:48px 40px;max-width:400px;width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.12);">
+    <h2 style="font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--accent);margin-bottom:8px;">◐ Ombre Brain</h2>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:28px;" id="auth-subtitle">验证身份</p>
+
+    <!-- Setup form -->
+    <div id="auth-setup-form" style="display:none;">
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">首次使用，请设置访问密码</p>
+      <input type="password" id="auth-setup-pwd" placeholder="设置密码（至少6位）" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:10px;" />
+      <input type="password" id="auth-setup-pwd2" placeholder="确认密码" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:16px;" onkeydown="if(event.key==='Enter')doSetup()" />
+      <button onclick="doSetup()" style="width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:14px;cursor:pointer;">设置密码并进入</button>
+    </div>
+
+    <!-- Login form -->
+    <div id="auth-login-form" style="display:none;">
+      <input type="password" id="auth-login-pwd" placeholder="输入访问密码" style="display:block;width:100%;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface-solid);color:var(--text);font-size:14px;margin-bottom:16px;" onkeydown="if(event.key==='Enter')doLogin()" />
+      <button onclick="doLogin()" style="width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:14px;cursor:pointer;">登录</button>
+    </div>
+
+    <div id="auth-error" style="color:var(--negative);font-size:13px;margin-top:12px;display:none;"></div>
+  </div>
+</div>
+
 <script>
+// ========================================
+// Auth system / 认证系统
+// ========================================
+async function checkAuth() {
+  try {
+    const resp = await fetch('/auth/status');
+    const data = await resp.json();
+    if (data.setup_needed) {
+      document.getElementById('auth-subtitle').textContent = '首次设置';
+      document.getElementById('auth-setup-form').style.display = 'block';
+    } else if (data.authenticated) {
+      document.getElementById('auth-overlay').style.display = 'none';
+    } else {
+      document.getElementById('auth-subtitle').textContent = '请输入访问密码';
+      document.getElementById('auth-login-form').style.display = 'block';
+    }
+  } catch {
+    document.getElementById('auth-overlay').style.display = 'none';
+  }
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+async function doSetup() {
+  const p1 = document.getElementById('auth-setup-pwd').value;
+  const p2 = document.getElementById('auth-setup-pwd2').value;
+  if (p1.length < 6) return showAuthError('密码至少6位');
+  if (p1 !== p2) return showAuthError('两次密码不一致');
+  const resp = await fetch('/auth/setup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: p1}) });
+  if (resp.ok) {
+    document.getElementById('auth-overlay').style.display = 'none';
+  } else {
+    const d = await resp.json();
+    showAuthError(d.detail || '设置失败');
+  }
+}
+
+async function doLogin() {
+  const pwd = document.getElementById('auth-login-pwd').value;
+  const resp = await fetch('/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pwd}) });
+  if (resp.ok) {
+    document.getElementById('auth-overlay').style.display = 'none';
+  } else {
+    const d = await resp.json();
+    showAuthError(d.detail || '密码错误');
+  }
+}
+
+async function doLogout() {
+  await fetch('/auth/logout', { method: 'POST' });
+  document.getElementById('auth-setup-form').style.display = 'none';
+  document.getElementById('auth-login-form').style.display = 'none';
+  document.getElementById('auth-login-form').style.display = 'block';
+  document.getElementById('auth-subtitle').textContent = '请输入访问密码';
+  document.getElementById('auth-error').style.display = 'none';
+  document.getElementById('auth-overlay').style.display = 'flex';
+}
+
+async function changePassword() {
+  const currentPwd = document.getElementById('settings-current-pwd').value;
+  const newPwd = document.getElementById('settings-new-pwd').value;
+  const newPwd2 = document.getElementById('settings-new-pwd2').value;
+  const msgEl = document.getElementById('settings-pwd-msg');
+  if (newPwd.length < 6) { msgEl.style.color = 'var(--negative)'; msgEl.textContent = '新密码至少6位'; return; }
+  if (newPwd !== newPwd2) { msgEl.style.color = 'var(--negative)'; msgEl.textContent = '两次密码不一致'; return; }
+  const resp = await authFetch('/auth/change-password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({current: currentPwd, new: newPwd}) });
+  if (!resp) return;
+  if (resp.ok) {
+    msgEl.style.color = 'var(--accent)'; msgEl.textContent = '密码修改成功';
+    document.getElementById('settings-current-pwd').value = '';
+    document.getElementById('settings-new-pwd').value = '';
+    document.getElementById('settings-new-pwd2').value = '';
+  } else {
+    const d = await resp.json();
+    msgEl.style.color = 'var(--negative)'; msgEl.textContent = d.detail || '修改失败';
+  }
+}
+
+async function loadSettingsStatus() {
+  const el = document.getElementById('settings-status');
+  try {
+    const resp = await authFetch('/api/status');
+    if (!resp) return;
+    const d = await resp.json();
+    const noticeEl = document.getElementById('settings-env-notice');
+    if (d.using_env_password) noticeEl.style.display = 'block';
+    else noticeEl.style.display = 'none';
+    el.innerHTML = `
+      <b>版本</b>：${d.version}<br>
+      <b>Bucket 总数</b>：${(d.buckets?.total ?? 0)} （永久:${d.buckets?.permanent ?? 0} / 动态:${d.buckets?.dynamic ?? 0} / 归档:${d.buckets?.archive ?? 0}）<br>
+      <b>衰减引擎</b>：${d.decay_engine}<br>
+      <b>向量搜索</b>：${d.embedding_enabled ? '已启用' : '未启用'}<br>
+    `;
+  } catch(e) {
+    el.textContent = '加载失败: ' + e;
+  }
+  // Also refresh the host-vault input whenever the settings tab is loaded.
+  loadHostVault();
+}
+
+async function loadHostVault() {
+  const input = document.getElementById('settings-host-vault');
+  const msg = document.getElementById('settings-host-vault-msg');
+  if (!input) return;
+  msg.textContent = '';
+  msg.style.color = 'var(--text-dim)';
+  try {
+    const resp = await authFetch('/api/host-vault');
+    if (!resp) return;
+    const d = await resp.json();
+    input.value = d.value || '';
+    if (d.source === 'env') {
+      msg.textContent = '当前由进程环境变量提供（修改 .env 不会立即覆盖）';
+      msg.style.color = 'var(--warning)';
+    } else if (d.source === 'file') {
+      msg.textContent = '当前来自 ' + (d.env_file || '.env');
+    } else {
+      msg.textContent = '尚未设置（默认使用 ./buckets）';
+    }
+  } catch(e) {
+    msg.style.color = 'var(--negative)';
+    msg.textContent = '加载失败: ' + e;
+  }
+}
+
+async function saveHostVault() {
+  const input = document.getElementById('settings-host-vault');
+  const msg = document.getElementById('settings-host-vault-msg');
+  if (!input) return;
+  const value = input.value.trim();
+  msg.textContent = '保存中…';
+  msg.style.color = 'var(--text-dim)';
+  try {
+    const resp = await authFetch('/api/host-vault', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({value})
+    });
+    if (!resp) return;
+    const d = await resp.json();
+    if (resp.ok) {
+      msg.style.color = 'var(--accent)';
+      msg.textContent = '已保存 → ' + (d.env_file || '.env') + '（需重启容器生效）';
+    } else {
+      msg.style.color = 'var(--negative)';
+      msg.textContent = d.error || '保存失败';
+    }
+  } catch(e) {
+    msg.style.color = 'var(--negative)';
+    msg.textContent = '保存失败: ' + e;
+  }
+}
+
+// authFetch: wraps fetch, shows auth overlay on 401
+async function authFetch(url, options) {
+  const resp = await fetch(url, options);
+  if (resp.status === 401) {
+    doLogout();
+    return null;
+  }
+  return resp;
+}
+
+// ========================================
+
 const BASE = location.origin;
 let allBuckets = [];
 let currentFilter = 'all';
@@ -793,9 +1047,11 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
+    document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
+    if (target === 'settings') loadSettingsStatus();
   });
 });
 
@@ -812,7 +1068,11 @@ document.getElementById('search-input').addEventListener('input', (e) => {
 async function loadBuckets() {
   try {
     const res = await fetch(BASE + '/api/buckets');
-    allBuckets = await res.json();
+    const data = await res.json();
+    if (!res.ok || !Array.isArray(data)) {
+      throw new Error((data && data.error) ? data.error : `HTTP ${res.status}`);
+    }
+    allBuckets = data;
     updateStats();
     buildFilters();
     renderBuckets(allBuckets);
@@ -1237,7 +1497,7 @@ async function saveConfig(persist) {
   }
 }
 
-loadBuckets();
+checkAuth().then(() => loadBuckets());
 
 // --- Import functions ---
 const uploadZone = document.getElementById('import-upload-zone');
@@ -1300,6 +1560,7 @@ function updateImportUI(s) {
   document.getElementById('import-status-text').textContent = statusMap[s.status] || s.status;
   document.getElementById('import-pause-btn').style.display = s.status === 'running' ? '' : 'none';
   if (s.status !== 'running') clearInterval(importPollTimer);
+  if (s.status === 'completed') loadImportResults();
   const errDiv = document.getElementById('import-errors');
   if (s.errors && s.errors.length) {
     errDiv.style.display = '';

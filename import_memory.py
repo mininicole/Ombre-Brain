@@ -19,10 +19,8 @@ import os
 import json
 import hashlib
 import logging
-import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from utils import count_tokens_approx, now_iso
 
@@ -39,6 +37,8 @@ def _parse_claude_json(data: dict | list) -> list[dict]:
     turns = []
     conversations = data if isinstance(data, list) else [data]
     for conv in conversations:
+        if not isinstance(conv, dict):
+            continue
         messages = conv.get("chat_messages", conv.get("messages", []))
         for msg in messages:
             if not isinstance(msg, dict):
@@ -61,18 +61,27 @@ def _parse_chatgpt_json(data: list | dict) -> list[dict]:
     turns = []
     conversations = data if isinstance(data, list) else [data]
     for conv in conversations:
+        if not isinstance(conv, dict):
+            continue
         mapping = conv.get("mapping", {})
         if mapping:
             # ChatGPT uses a tree structure with mapping
-            sorted_nodes = sorted(
-                mapping.values(),
-                key=lambda n: n.get("message", {}).get("create_time", 0) or 0,
-            )
+            # Filter out None nodes before sorting
+            valid_nodes = [n for n in mapping.values() if isinstance(n, dict)]
+
+            def _node_ts(n):
+                msg = n.get("message")
+                if not isinstance(msg, dict):
+                    return 0
+                return msg.get("create_time") or 0
+
+            sorted_nodes = sorted(valid_nodes, key=_node_ts)
             for node in sorted_nodes:
                 msg = node.get("message")
                 if not msg or not isinstance(msg, dict):
                     continue
-                content_parts = msg.get("content", {}).get("parts", [])
+                content_obj = msg.get("content", {})
+                content_parts = content_obj.get("parts", []) if isinstance(content_obj, dict) else []
                 content = " ".join(str(p) for p in content_parts if p)
                 if not content.strip():
                     continue
@@ -168,7 +177,7 @@ def detect_and_parse(raw_content: str, filename: str = "") -> list[dict]:
                 # Single conversation object with role/content messages
                 if "role" in sample and "content" in sample:
                     return _parse_claude_json(data)
-        except (json.JSONDecodeError, KeyError, IndexError):
+        except (json.JSONDecodeError, KeyError, IndexError, AttributeError, TypeError):
             pass
 
     # Fall back to markdown/text

@@ -10,18 +10,20 @@
 # 核心职责：
 #   - Initialize config, bucket manager, dehydrator, decay engine
 #     初始化配置、记忆桶管理器、脱水器、衰减引擎
-#   - Expose 5 MCP tools:
-#     暴露 5 个 MCP 工具：
+#   - Expose 6 MCP tools:
+#     暴露 6 个 MCP 工具：
 #       breath — Surface unresolved memories or search by keyword
 #                浮现未解决记忆 或 按关键词检索
-#       hold   — Store a single memory
-#                存储单条记忆
+#       hold   — Store a single memory (or write a `feel` reflection)
+#                存储单条记忆（或写 feel 反思）
 #       grow   — Diary digest, auto-split into multiple buckets
 #                日记归档，自动拆分多桶
 #       trace  — Modify metadata / resolved / delete
 #                修改元数据 / resolved 标记 / 删除
 #       pulse  — System status + bucket listing
 #                系统状态 + 所有桶列表
+#       dream  — Surface recent dynamic buckets for self-digestion
+#                返回最近桶 供模型自省/写 feel
 #
 # Startup:
 # 启动方式：
@@ -35,6 +37,11 @@ import sys
 import random
 import logging
 import asyncio
+import hashlib
+import hmac
+import secrets
+import time
+import json as _json_lib
 import httpx
 
 
@@ -56,11 +63,44 @@ config = load_config()
 setup_logging(config.get("log_level", "INFO"))
 logger = logging.getLogger("ombre_brain")
 
+# --- Runtime env vars (port + webhook) / 运行时环境变量 ---
+# OMBRE_PORT: HTTP/SSE 监听端口，默认 8000
+try:
+    OMBRE_PORT = int(os.environ.get("OMBRE_PORT", "8000") or "8000")
+except ValueError:
+    logger.warning("OMBRE_PORT 不是合法整数，回退到 8000")
+    OMBRE_PORT = 8000
+
+# OMBRE_HOOK_URL: 在 breath/dream 被调用后推送事件到该 URL（POST JSON）。
+# OMBRE_HOOK_SKIP: 设为 true/1/yes 跳过推送。
+# 详见 ENV_VARS.md。
+OMBRE_HOOK_URL = os.environ.get("OMBRE_HOOK_URL", "").strip()
+OMBRE_HOOK_SKIP = os.environ.get("OMBRE_HOOK_SKIP", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _fire_webhook(event: str, payload: dict) -> None:
+    """
+    Fire-and-forget POST to OMBRE_HOOK_URL with the given event payload.
+    Failures are logged at WARNING level only — never propagated to the caller.
+    """
+    if OMBRE_HOOK_SKIP or not OMBRE_HOOK_URL:
+        return
+    try:
+        body = {
+            "event": event,
+            "timestamp": time.time(),
+            "payload": payload,
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(OMBRE_HOOK_URL, json=body)
+    except Exception as e:
+        logger.warning(f"Webhook push failed ({event} → {OMBRE_HOOK_URL}): {e}")
+
 # --- Initialize core components / 初始化核心组件 ---
-bucket_mgr = BucketManager(config)                  # Bucket manager / 记忆桶管理器
+embedding_engine = EmbeddingEngine(config)            # Embedding engine first (BucketManager depends on it)
+bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket manager / 记忆桶管理器
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
-embedding_engine = EmbeddingEngine(config)            # Embedding engine / 向量化引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
@@ -69,8 +109,185 @@ import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  
 mcp = FastMCP(
     "Ombre Brain",
     host="0.0.0.0",
-    port=8000,
+    port=OMBRE_PORT,
 )
+
+
+# =============================================================
+# Dashboard Auth — simple cookie-based session auth
+# Dashboard 认证 —— 基于 Cookie 的会话认证
+#
+# Env var OMBRE_DASHBOARD_PASSWORD overrides file-stored password.
+# First visit with no password set → forced setup wizard.
+# Sessions stored in memory (lost on restart, 7-day expiry).
+# =============================================================
+_sessions: dict[str, float] = {}  # {token: expiry_timestamp}
+
+
+def _get_auth_file() -> str:
+    return os.path.join(config["buckets_dir"], ".dashboard_auth.json")
+
+
+def _load_password_hash() -> str | None:
+    try:
+        auth_file = _get_auth_file()
+        if os.path.exists(auth_file):
+            with open(auth_file, "r", encoding="utf-8") as f:
+                return _json_lib.load(f).get("password_hash")
+    except Exception:
+        pass
+    return None
+
+
+def _save_password_hash(password: str) -> None:
+    salt = secrets.token_hex(16)
+    h = hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
+    auth_file = _get_auth_file()
+    os.makedirs(os.path.dirname(auth_file), exist_ok=True)
+    with open(auth_file, "w", encoding="utf-8") as f:
+        _json_lib.dump({"password_hash": f"{salt}:{h}"}, f)
+
+
+def _verify_password_hash(password: str, stored: str) -> bool:
+    if ":" not in stored:
+        return False
+    salt, h = stored.split(":", 1)
+    return hmac.compare_digest(
+        h, hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
+    )
+
+
+def _is_setup_needed() -> bool:
+    """True if no password is configured (env var or file)."""
+    if os.environ.get("OMBRE_DASHBOARD_PASSWORD", ""):
+        return False
+    return _load_password_hash() is None
+
+
+def _verify_any_password(password: str) -> bool:
+    """Check password against env var (first) or stored hash."""
+    env_pwd = os.environ.get("OMBRE_DASHBOARD_PASSWORD", "")
+    if env_pwd:
+        return hmac.compare_digest(password, env_pwd)
+    stored = _load_password_hash()
+    if not stored:
+        return False
+    return _verify_password_hash(password, stored)
+
+
+def _create_session() -> str:
+    token = secrets.token_urlsafe(32)
+    _sessions[token] = time.time() + 86400 * 7  # 7-day expiry
+    return token
+
+
+def _is_authenticated(request) -> bool:
+    token = request.cookies.get("ombre_session")
+    if not token:
+        return False
+    expiry = _sessions.get(token)
+    if expiry is None or time.time() > expiry:
+        _sessions.pop(token, None)
+        return False
+    return True
+
+
+def _require_auth(request):
+    """Return JSONResponse(401) if not authenticated, else None."""
+    from starlette.responses import JSONResponse
+    if not _is_authenticated(request):
+        return JSONResponse(
+            {"error": "Unauthorized", "setup_needed": _is_setup_needed()},
+            status_code=401,
+        )
+    return None
+
+
+# --- Auth endpoints ---
+@mcp.custom_route("/auth/status", methods=["GET"])
+async def auth_status(request):
+    """Return auth state (authenticated, setup_needed)."""
+    from starlette.responses import JSONResponse
+    return JSONResponse({
+        "authenticated": _is_authenticated(request),
+        "setup_needed": _is_setup_needed(),
+    })
+
+
+@mcp.custom_route("/auth/setup", methods=["POST"])
+async def auth_setup_endpoint(request):
+    """Initial password setup (only when no password is configured)."""
+    from starlette.responses import JSONResponse
+    if not _is_setup_needed():
+        return JSONResponse({"error": "Already configured"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    password = body.get("password", "").strip()
+    if len(password) < 6:
+        return JSONResponse({"error": "密码不能少于6位"}, status_code=400)
+    _save_password_hash(password)
+    token = _create_session()
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie("ombre_session", token, httponly=True, samesite="lax", max_age=86400 * 7)
+    return resp
+
+
+@mcp.custom_route("/auth/login", methods=["POST"])
+async def auth_login(request):
+    """Login with password."""
+    from starlette.responses import JSONResponse
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    password = body.get("password", "")
+    if _verify_any_password(password):
+        token = _create_session()
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie("ombre_session", token, httponly=True, samesite="lax", max_age=86400 * 7)
+        return resp
+    return JSONResponse({"error": "密码错误"}, status_code=401)
+
+
+@mcp.custom_route("/auth/logout", methods=["POST"])
+async def auth_logout(request):
+    """Invalidate session."""
+    from starlette.responses import JSONResponse
+    token = request.cookies.get("ombre_session")
+    if token:
+        _sessions.pop(token, None)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("ombre_session")
+    return resp
+
+
+@mcp.custom_route("/auth/change-password", methods=["POST"])
+async def auth_change_password(request):
+    """Change dashboard password (requires current password)."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    if os.environ.get("OMBRE_DASHBOARD_PASSWORD", ""):
+        return JSONResponse({"error": "当前使用环境变量密码，请直接修改 OMBRE_DASHBOARD_PASSWORD"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    current = body.get("current", "")
+    new_pwd = body.get("new", "").strip()
+    if not _verify_any_password(current):
+        return JSONResponse({"error": "当前密码错误"}, status_code=401)
+    if len(new_pwd) < 6:
+        return JSONResponse({"error": "新密码不能少于6位"}, status_code=400)
+    _save_password_hash(new_pwd)
+    _sessions.clear()
+    token = _create_session()
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie("ombre_session", token, httponly=True, samesite="lax", max_age=86400 * 7)
+    return resp
 
 
 # =============================================================
@@ -79,6 +296,12 @@ mcp = FastMCP(
 # For Cloudflare Tunnel or reverse proxy to ping, preventing idle timeout
 # 供 Cloudflare Tunnel 或反代定期 ping，防止空闲超时断连
 # =============================================================
+@mcp.custom_route("/", methods=["GET"])
+async def root_redirect(request):
+    from starlette.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard")
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import JSONResponse
@@ -140,8 +363,11 @@ async def breath_hook(request):
             token_budget -= summary_tokens
 
         if not parts:
+            await _fire_webhook("breath_hook", {"surfaced": 0})
             return PlainTextResponse("")
-        return PlainTextResponse("[Ombre Brain - 记忆浮现]\n" + "\n---\n".join(parts))
+        body_text = "[Ombre Brain - 记忆浮现]\n" + "\n---\n".join(parts)
+        await _fire_webhook("breath_hook", {"surfaced": len(parts), "chars": len(body_text)})
+        return PlainTextResponse(body_text)
     except Exception as e:
         logger.warning(f"Breath hook failed: {e}")
         return PlainTextResponse("")
@@ -178,7 +404,9 @@ async def dream_hook(request):
                 f"{strip_wikilinks(b['content'][:200])}"
             )
 
-        return PlainTextResponse("[Ombre Brain - Dreaming]\n" + "\n---\n".join(parts))
+        body_text = "[Ombre Brain - Dreaming]\n" + "\n---\n".join(parts)
+        await _fire_webhook("dream_hook", {"surfaced": len(parts), "chars": len(body_text)})
+        return PlainTextResponse(body_text)
     except Exception as e:
         logger.warning(f"Dream hook failed: {e}")
         return PlainTextResponse("")
@@ -274,11 +502,46 @@ async def breath(
     valence: float = -1,
     arousal: float = -1,
     max_results: int = 20,
+    importance_min: int = -1,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
+
+    # --- importance_min mode: bulk fetch by importance threshold ---
+    # --- 重要度批量拉取模式：跳过语义搜索，按 importance 降序返回 ---
+    if importance_min >= 1:
+        try:
+            all_buckets = await bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            return f"记忆系统暂时无法访问: {e}"
+        filtered = [
+            b for b in all_buckets
+            if int(b["metadata"].get("importance", 0)) >= importance_min
+            and b["metadata"].get("type") not in ("feel",)
+        ]
+        filtered.sort(key=lambda b: int(b["metadata"].get("importance", 0)), reverse=True)
+        filtered = filtered[:20]
+        if not filtered:
+            return f"没有重要度 >= {importance_min} 的记忆。"
+        results = []
+        token_used = 0
+        for b in filtered:
+            if token_used >= max_tokens:
+                break
+            try:
+                clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                t = count_tokens_approx(summary)
+                if token_used + t > max_tokens:
+                    break
+                imp = b["metadata"].get("importance", 0)
+                results.append(f"[importance:{imp}] [bucket_id:{b['id']}] {summary}")
+                token_used += t
+            except Exception as e:
+                logger.warning(f"importance_min dehydrate failed: {e}")
+        return "\n---\n".join(results) if results else "没有可以展示的记忆。"
 
     # --- No args or empty query: surfacing mode (weight pool active push) ---
     # --- 无参数或空query：浮现模式（权重池主动推送）---
@@ -330,6 +593,18 @@ async def breath(
             top_scores = [(b["metadata"].get("name", b["id"]), decay_engine.calculate_score(b["metadata"])) for b in scored[:5]]
             logger.info(f"Top unresolved scores: {top_scores}")
 
+        # --- Cold-start detection: never-seen important buckets surface first ---
+        # --- 冷启动检测：从未被访问过且重要度>=8的桶优先插入最前面（最多2个）---
+        cold_start = [
+            b for b in unresolved
+            if int(b["metadata"].get("activation_count", 0)) == 0
+            and int(b["metadata"].get("importance", 0)) >= 8
+        ][:2]
+        cold_start_ids = {b["id"] for b in cold_start}
+        # Merge: cold_start first, then scored (excluding duplicates)
+        scored_deduped = [b for b in scored if b["id"] not in cold_start_ids]
+        scored_with_cold = cold_start + scored_deduped
+
         # --- Token-budgeted surfacing with diversity + hard cap ---
         # --- 按 token 预算浮现，带多样性 + 硬上限 ---
         # Top-1 always surfaces; rest sampled from top-20 for diversity
@@ -337,13 +612,17 @@ async def breath(
         for r in pinned_results:
             token_budget -= count_tokens_approx(r)
 
-        candidates = list(scored)
+        candidates = list(scored_with_cold)
         if len(candidates) > 1:
-            # Ensure highest-score bucket is first, shuffle rest from top-20
-            top1 = [candidates[0]]
-            pool = candidates[1:min(20, len(candidates))]
-            random.shuffle(pool)
-            candidates = top1 + pool + candidates[min(20, len(candidates)):]
+            # Cold-start buckets stay at front; shuffle rest from top-20
+            n_cold = len(cold_start)
+            non_cold = candidates[n_cold:]
+            if len(non_cold) > 1:
+                top1 = [non_cold[0]]
+                pool = non_cold[1:min(20, len(non_cold))]
+                random.shuffle(pool)
+                non_cold = top1 + pool + non_cold[min(20, len(non_cold)):]
+            candidates = cold_start + non_cold
         # Hard cap: never surface more than max_results buckets
         candidates = candidates[:max_results]
 
@@ -485,9 +764,12 @@ async def breath(
             logger.warning(f"Random surfacing failed / 随机浮现失败: {e}")
 
     if not results:
+        await _fire_webhook("breath", {"mode": "empty", "matches": 0})
         return "未找到相关记忆。"
 
-    return "\n---\n".join(results)
+    final_text = "\n---\n".join(results)
+    await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "chars": len(final_text)})
+    return final_text
 
 
 # =============================================================
@@ -557,10 +839,15 @@ async def hold(
         }
 
     domain = analysis["domain"]
-    valence = analysis["valence"]
-    arousal = analysis["arousal"]
+    auto_valence = analysis["valence"]
+    auto_arousal = analysis["arousal"]
     auto_tags = analysis["tags"]
     suggested_name = analysis.get("suggested_name", "")
+
+    # --- User-supplied valence/arousal takes priority over analyze() result ---
+    # --- 用户显式传入的 valence/arousal 优先，analyze() 结果作为 fallback ---
+    final_valence = valence if 0 <= valence <= 1 else auto_valence
+    final_arousal = arousal if 0 <= arousal <= 1 else auto_arousal
 
     all_tags = list(dict.fromkeys(auto_tags + extra_tags))
 
@@ -572,8 +859,8 @@ async def hold(
             tags=all_tags,
             importance=10,
             domain=domain,
-            valence=valence,
-            arousal=arousal,
+            valence=final_valence,
+            arousal=final_arousal,
             name=suggested_name or None,
             bucket_type="permanent",
             pinned=True,
@@ -590,8 +877,8 @@ async def hold(
         tags=all_tags,
         importance=importance,
         domain=domain,
-        valence=valence,
-        arousal=arousal,
+        valence=final_valence,
+        arousal=final_arousal,
         name=suggested_name,
     )
 
@@ -967,7 +1254,9 @@ async def dream() -> str:
         except Exception as e:
             logger.warning(f"Dream crystallization hint failed: {e}")
 
-    return header + "\n---\n".join(parts) + connection_hint + crystal_hint
+    final_text = header + "\n---\n".join(parts) + connection_hint + crystal_hint
+    await _fire_webhook("dream", {"recent": len(recent), "chars": len(final_text)})
+    return final_text
 
 
 # =============================================================
@@ -978,6 +1267,8 @@ async def dream() -> str:
 async def api_buckets(request):
     """List all buckets with metadata (no content for efficiency)."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=True)
         result = []
@@ -1012,6 +1303,8 @@ async def api_buckets(request):
 async def api_bucket_detail(request):
     """Get full bucket content by ID."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     bucket_id = request.path_params["bucket_id"]
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
@@ -1029,6 +1322,8 @@ async def api_bucket_detail(request):
 async def api_search(request):
     """Search buckets by query."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     query = request.query_params.get("q", "")
     if not query:
         return JSONResponse({"error": "missing q parameter"}, status_code=400)
@@ -1055,6 +1350,8 @@ async def api_search(request):
 async def api_network(request):
     """Get embedding similarity network for visualization."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         nodes = []
@@ -1098,6 +1395,8 @@ async def api_network(request):
 async def api_breath_debug(request):
     """Debug endpoint: simulate breath scoring and return per-bucket breakdown."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     query = request.query_params.get("q", "")
     q_valence = request.query_params.get("valence")
     q_arousal = request.query_params.get("arousal")
@@ -1189,6 +1488,8 @@ async def dashboard(request):
 async def api_config_get(request):
     """Get current runtime config (safe fields only, API key masked)."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     dehy = config.get("dehydration", {})
     emb = config.get("embedding", {})
     api_key = dehy.get("api_key", "")
@@ -1216,6 +1517,8 @@ async def api_config_update(request):
     """Hot-update runtime config. Optionally persist to config.yaml."""
     from starlette.responses import JSONResponse
     import yaml
+    err = _require_auth(request)
+    if err: return err
     try:
         body = await request.json()
     except Exception:
@@ -1298,6 +1601,122 @@ async def api_config_update(request):
 
 
 # =============================================================
+# /api/host-vault — read/write the host-side OMBRE_HOST_VAULT_DIR
+# 用于在 Dashboard 设置 docker-compose 挂载的宿主机记忆桶目录。
+# 写入项目根目录的 .env 文件，需 docker compose down/up 才能生效。
+# =============================================================
+
+def _project_env_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+
+def _read_env_var(name: str) -> str:
+    """Return current value of `name` from process env first, then .env file (best-effort)."""
+    val = os.environ.get(name, "").strip()
+    if val:
+        return val
+    env_path = _project_env_path()
+    if not os.path.exists(env_path):
+        return ""
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == name:
+                    return v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
+
+
+def _write_env_var(name: str, value: str) -> None:
+    """
+    Idempotent upsert of `NAME=value` in project .env. Creates the file if missing.
+    Preserves other entries verbatim. Quotes values containing spaces.
+    """
+    env_path = _project_env_path()
+    quoted = f'"{value}"' if value and (" " in value or "#" in value) else value
+    new_line = f"{name}={quoted}\n"
+
+    lines: list[str] = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    replaced = False
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, _, _v = stripped.partition("=")
+        if k.strip() == name:
+            lines[i] = new_line
+            replaced = True
+            break
+    if not replaced:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(new_line)
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+@mcp.custom_route("/api/host-vault", methods=["GET"])
+async def api_host_vault_get(request):
+    """Read the current OMBRE_HOST_VAULT_DIR (process env > project .env)."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    value = _read_env_var("OMBRE_HOST_VAULT_DIR")
+    return JSONResponse({
+        "value": value,
+        "source": "env" if os.environ.get("OMBRE_HOST_VAULT_DIR", "").strip() else ("file" if value else ""),
+        "env_file": _project_env_path(),
+    })
+
+
+@mcp.custom_route("/api/host-vault", methods=["POST"])
+async def api_host_vault_set(request):
+    """
+    Persist OMBRE_HOST_VAULT_DIR to the project .env file.
+    Body: {"value": "/path/to/vault"}  (empty string clears the entry)
+    Note: container restart is required for docker-compose to pick up the new mount.
+    """
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    raw = body.get("value", "")
+    if not isinstance(raw, str):
+        return JSONResponse({"error": "value must be a string"}, status_code=400)
+    value = raw.strip()
+
+    # Reject characters that would break .env / shell parsing
+    if "\n" in value or "\r" in value or '"' in value or "'" in value:
+        return JSONResponse({"error": "value must not contain quotes or newlines"}, status_code=400)
+
+    try:
+        _write_env_var("OMBRE_HOST_VAULT_DIR", value)
+    except Exception as e:
+        return JSONResponse({"error": f"failed to write .env: {e}"}, status_code=500)
+
+    return JSONResponse({
+        "ok": True,
+        "value": value,
+        "env_file": _project_env_path(),
+        "note": "已写入 .env；需在宿主机执行 `docker compose down && docker compose up -d` 让新挂载生效。",
+    })
+
+
+# =============================================================
 # Import API — conversation history import
 # 导入 API — 对话历史导入
 # =============================================================
@@ -1306,6 +1725,8 @@ async def api_config_update(request):
 async def api_import_upload(request):
     """Upload a conversation file and start import."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
 
     if import_engine.is_running:
         return JSONResponse({"error": "Import already running"}, status_code=409)
@@ -1357,6 +1778,8 @@ async def api_import_upload(request):
 async def api_import_status(request):
     """Get current import progress."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     return JSONResponse(import_engine.get_status())
 
 
@@ -1364,6 +1787,8 @@ async def api_import_status(request):
 async def api_import_pause(request):
     """Pause the running import."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     if not import_engine.is_running:
         return JSONResponse({"error": "No import running"}, status_code=400)
     import_engine.pause()
@@ -1374,6 +1799,8 @@ async def api_import_pause(request):
 async def api_import_patterns(request):
     """Detect high-frequency patterns after import."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     try:
         patterns = await import_engine.detect_patterns()
         return JSONResponse({"patterns": patterns})
@@ -1385,6 +1812,8 @@ async def api_import_patterns(request):
 async def api_import_results(request):
     """List recently imported/created buckets for review."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     try:
         limit = int(request.query_params.get("limit", "50"))
         all_buckets = await bucket_mgr.list_all(include_archive=False)
@@ -1411,6 +1840,8 @@ async def api_import_results(request):
 async def api_import_review(request):
     """Apply review decisions: mark buckets as important/noise/pinned."""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
     try:
         body = await request.json()
     except Exception:
@@ -1590,6 +2021,34 @@ async def api_remember(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# =============================================================
+# /api/status — system status for Dashboard settings tab
+# /api/status — Dashboard 设置页用系统状态
+# =============================================================
+@mcp.custom_route("/api/status", methods=["GET"])
+async def api_system_status(request):
+    """Return detailed system status for the settings panel."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        stats = await bucket_mgr.get_stats()
+        return JSONResponse({
+            "decay_engine": "running" if decay_engine.is_running else "stopped",
+            "embedding_enabled": embedding_engine.enabled,
+            "buckets": {
+                "permanent": stats.get("permanent_count", 0),
+                "dynamic": stats.get("dynamic_count", 0),
+                "archive": stats.get("archive_count", 0),
+                "total": stats.get("permanent_count", 0) + stats.get("dynamic_count", 0),
+            },
+            "using_env_password": bool(os.environ.get("OMBRE_DASHBOARD_PASSWORD", "")),
+            "version": "1.3.0",
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # --- Entry point / 启动入口 ---
 if __name__ == "__main__":
     transport = config.get("transport", "stdio")
@@ -1604,17 +2063,26 @@ if __name__ == "__main__":
 
         # --- Bearer token auth middleware ---
         # --- Bearer token 鉴权中间件 ---
-        # If OMBRE_AUTH_TOKEN env var is set, all requests except /health must
-        # include "Authorization: Bearer <token>". If unset, auth is disabled
-        # (backward compat — but server will log a warning).
-        # 设置 OMBRE_AUTH_TOKEN 环境变量后，除 /health 外所有请求都必须带
-        # "Authorization: Bearer <token>"。未设置则不强制（向后兼容，但会警告）。
+        # Protects MCP and hook endpoints used by programmatic clients (Claude
+        # Code / Desktop via mcp-proxy, SessionStart hooks). Dashboard routes
+        # (/, /dashboard, /auth/*, /api/*) are NOT gated here — they use the
+        # upstream cookie-session auth (_require_auth) instead.
+        # If OMBRE_AUTH_TOKEN env var is unset, auth is disabled (warning logged).
+        # 保护 MCP 与 hook 接口（Claude Code/Desktop 通过 mcp-proxy 调用、
+        # SessionStart hooks）。Dashboard 路由（/, /dashboard, /auth/*, /api/*）
+        # 不在此处拦截 —— 由 upstream 的 cookie session 鉴权 (_require_auth) 处理。
+        # 未设置 OMBRE_AUTH_TOKEN 时不强制（向后兼容，启动会有警告）。
         OMBRE_AUTH_TOKEN = os.environ.get("OMBRE_AUTH_TOKEN", "").strip()
-        PUBLIC_PATHS = {"/health"}
+        PROTECTED_PREFIXES = ("/mcp", "/breath-hook", "/dream-hook")
 
         class BearerAuthMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
-                if request.url.path in PUBLIC_PATHS:
+                path = request.url.path
+                needs_bearer = any(path == p or path.startswith(p + "/") or path.startswith(p + "?") for p in PROTECTED_PREFIXES)
+                # MCP transport may hit exactly /mcp (no trailing slash)
+                if not needs_bearer:
+                    needs_bearer = path in PROTECTED_PREFIXES
+                if not needs_bearer:
                     return await call_next(request)
                 if not OMBRE_AUTH_TOKEN:
                     return await call_next(request)
@@ -1633,7 +2101,7 @@ if __name__ == "__main__":
             async with httpx.AsyncClient() as client:
                 while True:
                     try:
-                        await client.get("http://localhost:8000/health", timeout=5)
+                        await client.get(f"http://localhost:{OMBRE_PORT}/health", timeout=5)
                         logger.debug("Keepalive ping OK / 保活 ping 成功")
                     except Exception as e:
                         logger.warning(f"Keepalive ping failed / 保活 ping 失败: {e}")
@@ -1669,6 +2137,6 @@ if __name__ == "__main__":
         else:
             logger.warning("⚠️  Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
 
-        uvicorn.run(_app, host="0.0.0.0", port=8000)
+        uvicorn.run(_app, host="0.0.0.0", port=OMBRE_PORT)
     else:
         mcp.run(transport=transport)

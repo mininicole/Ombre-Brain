@@ -1,3 +1,4 @@
+import pytest_asyncio
 # ============================================================
 # Test 1: Scoring Regression — pure local, no LLM needed
 # 测试 1：评分回归 —— 纯本地，不需要 LLM
@@ -22,7 +23,7 @@ from tests.dataset import DATASET
 # ============================================================
 # Fixtures: populate temp buckets from dataset
 # ============================================================
-@pytest.fixture
+@pytest_asyncio.fixture
 async def populated_env(test_config, bucket_mgr, decay_eng):
     """Create all dataset buckets in temp dir, return (bucket_mgr, decay_eng, bucket_ids)."""
     import frontmatter as fm

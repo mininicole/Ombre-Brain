@@ -8,7 +8,25 @@ import os
 import re
 import shutil
 
-VAULT_DIR = os.path.expanduser("~/Documents/Obsidian Vault/Ombre Brain")
+
+def _resolve_vault_dir() -> str:
+    """
+    Resolve the bucket vault root.
+    Priority: $OMBRE_BUCKETS_DIR > config.yaml > built-in ./buckets.
+    """
+    env_dir = os.environ.get("OMBRE_BUCKETS_DIR", "").strip()
+    if env_dir:
+        return os.path.expanduser(env_dir)
+    try:
+        from utils import load_config
+        return load_config()["buckets_dir"]
+    except Exception:
+        return os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "buckets"
+        )
+
+
+VAULT_DIR = _resolve_vault_dir()
 DYNAMIC_DIR = os.path.join(VAULT_DIR, "dynamic")
 
 # 新域关键词表（和 dehydrator.py 的 _local_analyze 一致）
@@ -147,7 +165,6 @@ def reclassify():
         new_domains = classify(body, old_domains)
 
         primary = sanitize_name(new_domains[0])
-        old_primary = sanitize_name(old_domains[0]) if old_domains else "未分类"
 
         if name and name != bucket_id:
             new_filename = f"{sanitize_name(name)}_{bucket_id}.md"
@@ -179,7 +196,7 @@ def reclassify():
             os.rmdir(dp)
             print(f"\n  🗑 删除空目录: {d}/")
 
-    print(f"\n重分类完成。\n")
+    print("\n重分类完成。\n")
 
     # 展示新结构
     print("=== 新目录结构 ===")

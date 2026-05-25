@@ -65,7 +65,7 @@
 **自动化处理**
 - 存入时 LLM 自动分析 domain/valence/arousal/tags/name
 - 大段日记 LLM 拆分为 2~6 条独立记忆
-- 浮现时自动脱水压缩（LLM 压缩保语义，API 不可用降级到本地关键词提取）
+- 浮现时自动脱水压缩（LLM 压缩保语义，API 不可用时直接报错，无静默降级）
 - Wikilink `[[]]` 由 LLM 在内容中标记
 
 ---
@@ -76,7 +76,7 @@
 
 | 工具 | 关键参数 | 功能 |
 |---|---|---|
-| `breath` | query, max_tokens, domain, valence, arousal, max_results | 检索/浮现记忆 |
+| `breath` | query, max_tokens, domain, valence, arousal, max_results, **importance_min** | 检索/浮现记忆 |
 | `hold` | content, tags, importance, pinned, feel, source_bucket, valence, arousal | 存储记忆 |
 | `grow` | content | 日记拆分归档 |
 | `trace` | bucket_id, name, domain, valence, arousal, importance, tags, resolved, pinned, digested, content, delete | 修改元数据/内容/删除 |
@@ -85,10 +85,11 @@
 
 **工具详细行为**
 
-**`breath`** — 两种模式：
-- **浮现模式**（无 query）：无参调用，按衰减引擎活跃度排序返回 top 记忆，permanent/pinned 始终浮现
+**`breath`** — 三种模式：
+- **浮现模式**（无 query）：无参调用，按衰减引擎活跃度排序返回 top 记忆，钉选桶始终展示；冷启动检测（`activation_count==0 && importance>=8`）的桶最多 2 个插入最前，再 Top-1 固定 + Top-20 随机打乱
 - **检索模式**（有 query）：关键词 + 向量双通道搜索，四维评分（topic×4 + emotion×2 + time×2.5 + importance×1），阈值过滤
 - **Feel 检索**（`domain="feel"`）：特殊通道，按创建时间倒序返回所有 feel 类型桶，不走评分逻辑
+- **重要度批量模式**（`importance_min>=1`）：跳过语义搜索，直接筛选 importance≥importance_min 的桶，按 importance 降序，最多 20 条
 - 若指定 valence，对匹配桶的 valence 微调 ±0.1（情感记忆重构）
 
 **`hold`** — 两种模式：
@@ -120,26 +121,41 @@
 | `/breath-hook` | GET | SessionStart 钩子 |
 | `/dream-hook` | GET | Dream 钩子 |
 | `/dashboard` | GET | Dashboard 页面 |
-| `/api/buckets` | GET | 桶列表 |
-| `/api/bucket/{id}` | GET | 桶详情 |
-| `/api/search?q=` | GET | 搜索 |
-| `/api/network` | GET | 向量相似网络 |
-| `/api/breath-debug` | GET | 评分调试 |
-| `/api/config` | GET | 配置查看（key 脱敏） |
-| `/api/config` | POST | 热更新配置 |
-| `/api/import/upload` | POST | 上传并启动历史对话导入 |
-| `/api/import/status` | GET | 导入进度查询 |
-| `/api/import/pause` | POST | 暂停/继续导入 |
-| `/api/import/patterns` | GET | 导入完成后词频规律检测 |
-| `/api/import/results` | GET | 已导入记忆桶列表 |
-| `/api/import/review` | POST | 批量审阅/批准导入结果 |
+| `/api/buckets` | GET | 桶列表 🔒 |
+| `/api/bucket/{id}` | GET | 桶详情 🔒 |
+| `/api/search?q=` | GET | 搜索 🔒 |
+| `/api/network` | GET | 向量相似网络 🔒 |
+| `/api/breath-debug` | GET | 评分调试 🔒 |
+| `/api/config` | GET | 配置查看（key 脱敏）🔒 |
+| `/api/config` | POST | 热更新配置 🔒 |
+| `/api/status` | GET | 系统状态（版本/桶数/引擎）🔒 |
+| `/api/import/upload` | POST | 上传并启动历史对话导入 🔒 |
+| `/api/import/status` | GET | 导入进度查询 🔒 |
+| `/api/import/pause` | POST | 暂停/继续导入 🔒 |
+| `/api/import/patterns` | GET | 导入完成后词频规律检测 🔒 |
+| `/api/import/results` | GET | 已导入记忆桶列表 🔒 |
+| `/api/import/review` | POST | 批量审阅/批准导入结果 🔒 |
+| `/auth/status` | GET | 认证状态（是否需要初始化密码）|
+| `/auth/setup` | POST | 首次设置密码 |
+| `/auth/login` | POST | 密码登录，颁发 session cookie |
+| `/auth/logout` | POST | 注销 session |
+| `/auth/change-password` | POST | 修改密码 🔒 |
 
-**Dashboard（5 个 Tab）**
+> 🔒 = 需要 Dashboard 认证（未认证返回 401 JSON）
+
+**Dashboard 认证**
+- 密码存储：SHA-256 + 随机 salt，保存于 `{buckets_dir}/.dashboard_auth.json`
+- 环境变量 `OMBRE_DASHBOARD_PASSWORD` 设置后，覆盖文件密码（只读，不可通过 Dashboard 修改）
+- Session：内存字典（服务重启失效），cookie `ombre_session`（HttpOnly, SameSite=Lax, 7天）
+- `/health`, `/breath-hook`, `/dream-hook`, `/mcp*` 路径不受保护（公开）
+
+**Dashboard（6 个 Tab）**
 1. 记忆桶列表：6 种过滤器 + 主题域过滤 + 搜索 + 详情面板
 2. Breath 模拟：输入参数 → 可视化五步流程 → 四维条形图
 3. 记忆网络：Canvas 力导向图（节点=桶，边=相似度）
 4. 配置：热更新脱水/embedding/合并参数
 5. 导入：历史对话拖拽上传 → 分块处理进度条 → 词频规律分析 → 导入结果审阅
+6. 设置：服务状态监控、修改密码、退出登录
 
 **部署选项**
 1. 本地 stdio（`python server.py`）
@@ -152,7 +168,7 @@
 **迁移/批处理工具**：`migrate_to_domains.py`、`reclassify_domains.py`、`reclassify_api.py`、`backfill_embeddings.py`、`write_memory.py`、`check_buckets.py`、`import_memory.py`（历史对话导入引擎）
 
 **降级策略**
-- 脱水 API 不可用 → 本地关键词提取 + 句子评分
+- 脱水 API 不可用 → 直接抛 RuntimeError（设计决策，详见 BEHAVIOR_SPEC.md 三、降级行为表）
 - 向量搜索不可用 → 纯 fuzzy match
 - 逐条错误隔离（grow 中单条失败不影响其他）
 
@@ -172,6 +188,7 @@
 | `OMBRE_BUCKETS_DIR` | 记忆桶存储目录路径 | 否 | `""` → 回退到 config 或 `./buckets` |
 | `OMBRE_HOOK_URL` | SessionStart 钩子调用的服务器 URL | 否 | `"http://localhost:8000"` |
 | `OMBRE_HOOK_SKIP` | 设为 `"1"` 跳过 SessionStart 钩子 | 否 | 未设置（不跳过） |
+| `OMBRE_DASHBOARD_PASSWORD` | 预设 Dashboard 访问密码；设置后覆盖文件密码，首次访问不弹设置向导 | 否 | `""` |
 
 环境变量优先级：`环境变量 > config.yaml > 硬编码默认值`。所有环境变量在 `utils.py` 中读取并注入 config dict。
 
@@ -199,7 +216,7 @@
 | `server.py` | MCP 服务器主入口，注册工具 + Dashboard API + 钩子端点 | `bucket_manager`, `dehydrator`, `decay_engine`, `embedding_engine`, `utils` | `test_tools.py` |
 | `bucket_manager.py` | 记忆桶 CRUD、多维索引搜索、wikilink 注入、激活更新 | `utils` | `server.py`, `check_buckets.py`, `backfill_embeddings.py` |
 | `decay_engine.py` | 衰减引擎：遗忘曲线计算、自动归档、自动结案 | 无（接收 `bucket_mgr` 实例） | `server.py` |
-| `dehydrator.py` | 数据脱水压缩 + 合并 + 自动打标（LLM API + 本地降级） | `utils` | `server.py` |
+| `dehydrator.py` | 数据脱水压缩 + 合并 + 自动打标（仅 LLM API，不可用时报 RuntimeError） | `utils` | `server.py` |
 | `embedding_engine.py` | 向量化引擎：Gemini embedding API + SQLite + 余弦搜索 | `utils` | `server.py`, `backfill_embeddings.py` |
 | `utils.py` | 配置加载、日志、路径安全、ID 生成、token 估算 | 无 | 所有模块 |
 | `write_memory.py` | 手动写入记忆 CLI（绕过 MCP） | 无（独立脚本） | 无 |
@@ -372,12 +389,12 @@
 
 ### 5.4 为什么有 dehydration（脱水）这一层？
 
-**决策**：存入前先用 LLM 压缩内容（保留信息密度，去除冗余表达），API 不可用时降级到本地关键词提取。
+**决策**：存入前先用 LLM 压缩内容（保留信息密度，去除冗余表达）。API 不可用时直接抛出 `RuntimeError`，不静默降级。
 
 **理由**：
 - MCP 上下文有 token 限制，原始对话冗长，需要压缩
 - LLM 压缩能保留语义和情感色彩，纯截断会丢信息
-- 降级到本地确保离线可用——关键词提取 + 句子排序 + 截断
+- 本地关键词提取质量不足以替代语义打标与合并，静默降级会产生错误分类记忆，比报错更危险。详见 BEHAVIOR_SPEC.md 三、降级行为表。
 
 **放弃方案**：只做截断。信息损失太大。
 
@@ -479,3 +496,92 @@ type: dynamic
 
 桶正文内容...
 ```
+
+---
+
+## 7. Bug 修复记录 (B-01 至 B-10)
+
+### B-01 — `update(resolved=True)` 自动归档 🔴 高
+
+- **文件**: `bucket_manager.py` → `update()`
+- **问题**: `resolved=True` 时立即调用 `_move_bucket(archive_dir)` 将桶移入 `archive/`
+- **修复**: 移除 `_move_bucket` 逻辑；resolved 桶留在 `dynamic/`，由 decay 引擎自然淘汰
+- **影响**: 已解决的桶仍可被关键词检索命中（降权但不消失）
+- **测试**: `tests/regression/test_issue_B01.py`，`tests/integration/test_scenario_07_trace.py`
+
+### B-03 — `int()` 截断浮点 activation_count 🔴 高
+
+- **文件**: `decay_engine.py` → `calculate_score()`
+- **问题**: `max(1, int(activation_count))` 将 `_time_ripple` 写入的 1.3 截断为 1，涟漪加成失效
+- **修复**: 改为 `max(1.0, float(activation_count))`
+- **影响**: 时间涟漪效果现在正确反映在 score 上；高频访问的桶衰减更慢
+- **测试**: `tests/regression/test_issue_B03.py`，`tests/unit/test_calculate_score.py`
+
+### B-04 — `create()` 初始化 activation_count=1 🟠 中
+
+- **文件**: `bucket_manager.py` → `create()`
+- **问题**: `activation_count=1` 导致冷启动检测条件 `== 0` 永不满足，新建重要桶无法浮现
+- **修复**: 改为 `activation_count=0`；`touch()` 首次命中后变 1
+- **测试**: `tests/regression/test_issue_B04.py`，`tests/integration/test_scenario_01_cold_start.py`
+
+### B-05 — 时间衰减系数 0.1 过快 🟠 中
+
+- **文件**: `bucket_manager.py` → `_calc_time_score()`
+- **问题**: `math.exp(-0.1 * days)` 导致 30 天后得分仅剩 ≈0.05，远快于人类记忆曲线
+- **修复**: 改为 `math.exp(-0.02 * days)`（30 天后 ≈0.549）
+- **影响**: 记忆保留时间更符合人类认知模型
+- **测试**: `tests/regression/test_issue_B05.py`，`tests/unit/test_score_components.py`
+
+### B-06 — `w_time` 默认值 2.5 过高 🟠 中
+
+- **文件**: `bucket_manager.py` → `_calc_final_score()`（或评分调用处）
+- **问题**: `scoring.get("time_proximity", 2.5)` — 时间权重过高，近期低质量记忆得分高于高质量旧记忆
+- **修复**: 改为 `scoring.get("time_proximity", 1.5)`
+- **测试**: `tests/regression/test_issue_B06.py`，`tests/unit/test_score_components.py`
+
+### B-07 — `content_weight` 默认值 3.0 过高 🟠 中
+
+- **文件**: `bucket_manager.py` → `_calc_topic_score()`
+- **问题**: `scoring.get("content_weight", 3.0)` — 内容权重远大于名字权重(×3)，导致内容重复堆砌的桶得分高于名字精确匹配的桶
+- **修复**: 改为 `scoring.get("content_weight", 1.0)`
+- **影响**: 名字完全匹配 > 标签匹配 > 内容匹配的得分层级现在正确
+- **测试**: `tests/regression/test_issue_B07.py`，`tests/unit/test_topic_score.py`
+
+### B-08 — `run_decay_cycle()` 同轮 auto_resolve 后 score 未降权 🟡 低
+
+- **文件**: `decay_engine.py` → `run_decay_cycle()`
+- **问题**: `auto_resolve` 标记后立即用旧 `meta`（stale）计算 score，`resolved_factor=0.05` 未生效
+- **修复**: 在 `bucket_mgr.update(resolved=True)` 后立即执行 `meta["resolved"] = True`，确保同轮降权
+- **测试**: `tests/regression/test_issue_B08.py`，`tests/integration/test_scenario_08_decay.py`
+
+### B-09 — `hold()` 用 analyze() 覆盖用户传入的 valence/arousal 🟡 低
+
+- **文件**: `server.py` → `hold()`
+- **问题**: 先调 `analyze()`，再直接用结果覆盖用户传入的情感值，情感准确性丢失
+- **修复**: 使用 `final_valence = user_valence if user_valence is not None else analyze_result.get("valence")`
+- **影响**: 用户明确传入的情感坐标（包括 0.0）不再被 LLM 结果覆盖
+- **测试**: `tests/regression/test_issue_B09.py`，`tests/integration/test_scenario_03_hold.py`
+
+### B-10 — feel 桶 `domain=[]` 被填充为 `["未分类"]` 🟡 低
+
+- **文件**: `bucket_manager.py` → `create()`
+- **问题**: `if not domain: domain = ["未分类"]` 对所有桶类型生效，feel 桶的空 domain 被错误填充
+- **修复**: 改为 `if not domain and bucket_type != "feel": domain = ["未分类"]`
+- **影响**: `breath(domain="feel")` 通道过滤逻辑现在正确（feel 桶 domain 始终为空列表）
+- **测试**: `tests/regression/test_issue_B10.py`，`tests/integration/test_scenario_10_feel.py`
+
+---
+
+### Bug 修复汇总表
+
+| ID | 严重度 | 文件 | 方法 | 一句话描述 |
+|---|---|---|---|---|
+| B-01 | 🔴 高 | `bucket_manager.py` | `update()` | resolved 桶不再自动归档 |
+| B-03 | 🔴 高 | `decay_engine.py` | `calculate_score()` | float activation_count 不被 int() 截断 |
+| B-04 | 🟠 中 | `bucket_manager.py` | `create()` | 初始 activation_count=0 |
+| B-05 | 🟠 中 | `bucket_manager.py` | `_calc_time_score()` | 时间衰减系数 0.02（原 0.1） |
+| B-06 | 🟠 中 | `bucket_manager.py` | 评分权重配置 | w_time 默认 1.5（原 2.5） |
+| B-07 | 🟠 中 | `bucket_manager.py` | `_calc_topic_score()` | content_weight 默认 1.0（原 3.0） |
+| B-08 | 🟡 低 | `decay_engine.py` | `run_decay_cycle()` | auto_resolve 同轮应用 ×0.05 |
+| B-09 | 🟡 低 | `server.py` | `hold()` | 用户 valence/arousal 优先 |
+| B-10 | 🟡 低 | `bucket_manager.py` | `create()` | feel 桶 domain=[] 不被填充 |

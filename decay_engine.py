@@ -112,7 +112,7 @@ class DecayEngine:
             return 50.0
 
         importance = max(1, min(10, int(metadata.get("importance", 5))))
-        activation_count = max(1, int(metadata.get("activation_count", 1)))
+        activation_count = max(1.0, float(metadata.get("activation_count", 1)))
 
         # --- Days since last activation ---
         last_active_str = metadata.get("last_active", metadata.get("created", ""))
@@ -215,6 +215,7 @@ class DecayEngine:
                 if imp <= 4 and days_since > 30:
                     try:
                         await self.bucket_mgr.update(bucket["id"], resolved=True)
+                        meta["resolved"] = True  # refresh local meta so resolved_factor applies this cycle
                         auto_resolved += 1
                         logger.info(
                             f"Auto-resolved / 自动结案: "

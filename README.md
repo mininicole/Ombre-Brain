@@ -79,6 +79,11 @@ curl http://localhost:8000/health
 {"status":"ok","buckets":0,"decay_engine":"stopped"}
 ```
 
+浏览器打开前端 Dashboard：**http://localhost:8000/dashboard**
+
+> 如果你用的是 `docker-compose.user.yml` 默认端口，地址就是 `http://localhost:8000/dashboard`。
+> 如果你改了端口映射（比如 `18001:8000`），则是 `http://localhost:18001/dashboard`。
+
 > **看到错误？** 检查 Docker Desktop 是否正在运行（状态栏有图标）。
 
 ### 第六步：接入 Claude
@@ -139,7 +144,7 @@ OMBRE_API_KEY=你的API密钥
 > 1. 打开 [aistudio.google.com/apikey](https://aistudio.google.com/apikey)，登录 Google 账号
 > 2. 点击「Create API key」生成一个 key
 > 3. 把 key 填入 `.env` 文件的 `OMBRE_API_KEY=` 后面
-> 4. 免费额度（截至 2025 年，请以官网实时信息为准）：
+> 4. 免费额度（请以官网实时信息为准）：
 >    - **脱水/打标模型**（`gemini-2.5-flash-lite`）：免费层 30 req/min
 >    - **向量化模型**（`gemini-embedding-001`）：免费层 1500 req/day，3072 维
 > 5. 在 `config.yaml` 中 `dehydration.base_url` 设为 `https://generativelanguage.googleapis.com/v1beta/openai`
@@ -154,7 +159,7 @@ OMBRE_API_KEY=你的API密钥
 > 3. Set `dehydration.base_url` to `https://generativelanguage.googleapis.com/v1beta/openai` in `config.yaml`
 > Also supports DeepSeek, Ollama, LM Studio, vLLM, or any OpenAI-compatible API.
 
-没有 API key 也能用，脱水压缩会降级到本地模式，只是效果差一点。那就写：
+没有 API key 则脱水压缩和自动打标功能不可用（会报错），但记忆的读写和检索仍正常工作。如果暂时不用脱水功能，可以留空：
 
 ```
 OMBRE_API_KEY=
@@ -192,6 +197,8 @@ docker logs ombre-brain
 ```
 
 看到 `Uvicorn running on http://0.0.0.0:8000` 说明成功了。
+
+浏览器打开前端 Dashboard：**http://localhost:18001/dashboard**（`docker-compose.yml` 默认端口映射 `18001:8000`）
 
 ---
 
@@ -241,8 +248,8 @@ Ombre Brain gives it persistent memory — not cold key-value storage, but a sys
 - **Obsidian 原生 / Obsidian-native**: 每个记忆桶就是一个 Markdown 文件，YAML frontmatter 存元数据。可以直接在 Obsidian 里浏览、编辑、搜索。自动注入 `[[双链]]`。
   Each memory bucket is a Markdown file with YAML frontmatter. Browse, edit, and search directly in Obsidian. Wikilinks are auto-injected.
 
-- **API 降级 / API degradation**: 脱水压缩和自动打标优先用廉价 LLM API（DeepSeek / Gemini 等），API 不可用时自动降级到本地关键词分析——始终可用。向量检索不可用时降级到 fuzzy matching。
-  Dehydration and auto-tagging prefer a cheap LLM API (DeepSeek / Gemini etc.). When the API is unavailable, it degrades to local keyword analysis — always functional. Embedding search degrades to fuzzy matching when unavailable.
+- **API 脱水 + 缓存 / API dehydration + cache**: 脱水压缩和自动打标通过 LLM API（DeepSeek / Gemini 等）完成，结果缓存到本地 SQLite（`dehydration_cache.db`），相同内容不重复调用 API。向量检索不可用时降级到 fuzzy matching。
+  Dehydration and auto-tagging are done via LLM API (DeepSeek / Gemini etc.), with results cached locally in SQLite (`dehydration_cache.db`) to avoid redundant API calls. Embedding search degrades to fuzzy matching when unavailable.
 
 - **历史对话导入 / Conversation history import**: 将过去与 Claude / ChatGPT / DeepSeek 等的对话批量导入为记忆桶。支持 Claude JSON 导出、ChatGPT 导出、Markdown、纯文本等格式，分块处理带断点续传，通过 Dashboard「导入」Tab 操作。
   Batch-import past conversations (Claude / ChatGPT / DeepSeek etc.) as memory buckets. Supports Claude JSON export, ChatGPT export, Markdown, and plain text. Chunked processing with resume support, via the Dashboard "Import" tab.
@@ -428,6 +435,27 @@ Sensitive config via env vars:
 - `OMBRE_API_KEY` — LLM API 密钥
 - `OMBRE_TRANSPORT` — 覆盖传输方式
 - `OMBRE_BUCKETS_DIR` — 覆盖存储路径
+- `OMBRE_DASHBOARD_PASSWORD` — Dashboard 访问密码（可选，见下）
+
+## Dashboard 认证 / Dashboard Auth
+
+自 v1.3.0 起，Dashboard 和所有 `/api/*` 端点均受密码保护。
+Since v1.3.0, the Dashboard and all `/api/*` endpoints are password-protected.
+
+**首次访问**：若未设置密码，浏览器会弹出设置向导，填写并确认密码后即可使用。
+**First visit**: If no password is set, a setup wizard will appear. Enter and confirm a password to get started.
+
+**通过环境变量预设密码**：在 `docker-compose.user.yml` 中添加：
+**Pre-set via env var** in your `docker-compose.user.yml`:
+```yaml
+environment:
+  - OMBRE_DASHBOARD_PASSWORD=your_password_here
+```
+设置后，Dashboard 的"修改密码"功能将被禁用，必须通过环境变量修改。
+When set, the in-Dashboard password change is disabled — modify the env var directly.
+
+完整环境变量说明见 [ENV_VARS.md](ENV_VARS.md)。
+Full env var reference: [ENV_VARS.md](ENV_VARS.md).
 
 ## 衰减公式 / Decay Formula
 
@@ -553,6 +581,7 @@ docker compose -f docker-compose.user.yml up -d
 ```
 
 验证：`curl http://localhost:8000/health`
+Dashboard：浏览器打开 `http://localhost:8000/dashboard`
 
 ### Render
 
@@ -562,16 +591,18 @@ docker compose -f docker-compose.user.yml up -d
 > **Free tier won't work**: Render free tier has **no persistent disk** — all memory data is lost on restart. It also sleeps on inactivity. **Starter plan ($7/mo) or above is required.**
 
 项目根目录已包含 `render.yaml`，点击按钮后：
-1. （可选）设置 `OMBRE_API_KEY`：任何 OpenAI 兼容 API 的 key，不填则自动降级为本地关键词提取
+1. 设置 `OMBRE_API_KEY`：任何 OpenAI 兼容 API 的 key（**必需**，未设置时 hold/grow 会报错、仅检索类工具可用）
 2. （可选）设置 `OMBRE_BASE_URL`：API 地址，支持任意 OpenAI 化地址，如 `https://api.deepseek.com/v1` / `http://123.1.1.1:7689/v1` / `http://your-ollama:11434/v1`
 3. Render 自动挂载持久化磁盘到 `/opt/render/project/src/buckets`
-4. 部署后 MCP URL：`https://<你的服务名>.onrender.com/mcp`
+4. Dashboard：`https://<你的服务名>.onrender.com/dashboard`
+5. 部署后 MCP URL：`https://<你的服务名>.onrender.com/mcp`
 
 `render.yaml` is included. After clicking the button:
-1. (Optional) `OMBRE_API_KEY`: any OpenAI-compatible key; omit to fall back to local keyword extraction
+1. `OMBRE_API_KEY`: any OpenAI-compatible key (**required** for hold/grow; without it those tools raise an error)
 2. (Optional) `OMBRE_BASE_URL`: any OpenAI-compatible endpoint, e.g. `https://api.deepseek.com/v1`, `http://123.1.1.1:7689/v1`, `http://your-ollama:11434/v1`
 3. Persistent disk auto-mounts at `/opt/render/project/src/buckets`
-4. MCP URL after deploy: `https://<your-service>.onrender.com/mcp`
+4. Dashboard: `https://<your-service>.onrender.com/dashboard`
+5. MCP URL after deploy: `https://<your-service>.onrender.com/mcp`
 
 ### Zeabur
 
@@ -589,7 +620,7 @@ docker compose -f docker-compose.user.yml up -d
    - Zeabur auto-detects the `Dockerfile` in root and builds via Docker
 
 2. **设置环境变量 / Set environment variables**（服务页面 → **Variables** 标签页）
-   - `OMBRE_API_KEY`（可选）— LLM API 密钥，不填则自动降级为本地关键词提取
+   - `OMBRE_API_KEY`（**必需**）— LLM API 密钥；未设置时 hold/grow/dream 会报错
    - `OMBRE_BASE_URL`（可选）— API 地址，如 `https://api.deepseek.com/v1`
 
    > ⚠️ **不需要**手动设置 `OMBRE_TRANSPORT` 和 `OMBRE_BUCKETS_DIR`，Dockerfile 里已经设好了默认值。Zeabur 对单阶段 Dockerfile 会自动注入控制台设置的环境变量。
@@ -611,6 +642,7 @@ docker compose -f docker-compose.user.yml up -d
 5. **验证 / Verify**
    - 访问 `https://<你的域名>.zeabur.app/health`，应返回 JSON
    - Visit `https://<your-domain>.zeabur.app/health` — should return JSON
+   - Dashboard：`https://<你的域名>.zeabur.app/dashboard`
    - 最终 MCP 地址 / MCP URL：`https://<你的域名>.zeabur.app/mcp`
 
 **常见问题 / Troubleshooting：**
@@ -671,6 +703,151 @@ When connecting via tunnel, ensure:
 可以通过 `OMBRE_HOOK_URL` 环境变量指定服务器地址（默认 `http://localhost:8000`），或者设置 `OMBRE_HOOK_SKIP=1` 临时禁用。
 
 If using Claude Code, `.claude/settings.json` configures a `SessionStart` hook that auto-calls `breath` on each new or resumed session, surfacing your highest-weight unresolved memories as context. Only active in remote HTTP mode. Set `OMBRE_HOOK_SKIP=1` to disable temporarily.
+
+## 更新 / How to Update
+
+不同部署方式的更新方法。
+
+Different update procedures depending on your deployment method.
+
+### Docker Hub 预构建镜像用户 / Docker Hub Pre-built Image
+
+```bash
+# 拉取最新镜像
+docker pull p0luz/ombre-brain:latest
+
+# 重启容器（记忆数据在 volume 里，不会丢失）
+docker compose -f docker-compose.user.yml down
+docker compose -f docker-compose.user.yml up -d
+```
+
+> 你的记忆数据挂载在 `./buckets:/data`，pull + restart 不会影响已有数据。
+> Your memory data is mounted at `./buckets:/data` — pull + restart won't affect existing data.
+
+### 从源码部署用户 / Source Code Deploy (Docker)
+
+```bash
+cd Ombre-Brain
+
+# 拉取最新代码
+git pull origin main
+
+# 重新构建并重启
+docker compose down
+docker compose build
+docker compose up -d
+```
+
+> `docker compose build` 会重新构建镜像。volume 挂载的记忆数据不受影响。
+> `docker compose build` rebuilds the image. Volume-mounted memory data is unaffected.
+
+### 本地 Python 用户 / Local Python (no Docker)
+
+```bash
+cd Ombre-Brain
+
+# 拉取最新代码
+git pull origin main
+
+# 更新依赖（如有新增）
+pip install -r requirements.txt
+
+# 重启服务
+# Ctrl+C 停止旧进程，然后：
+python server.py
+```
+
+### Render
+
+Render 连接了你的 GitHub 仓库，**自动部署**：
+
+1. 如果你 Fork 了仓库 → 在 GitHub 上同步上游更新（Sync fork），Render 会自动重新部署
+2. 或者手动：Render Dashboard → 你的服务 → **Manual Deploy** → **Deploy latest commit**
+
+> 持久化磁盘（`/opt/render/project/src/buckets`）上的记忆数据在重新部署时保留。
+> Persistent disk data at `/opt/render/project/src/buckets` is preserved across deploys.
+
+### Zeabur
+
+Zeabur 也连接了你的 GitHub 仓库：
+
+1. 在 GitHub 上同步 Fork 的最新代码 → Zeabur 自动触发重新构建部署
+2. 或者手动：Zeabur Dashboard → 你的服务 → **Redeploy**
+
+> Volume 挂载在 `/app/buckets`，重新部署时数据保留。
+> Volume mounted at `/app/buckets` — data persists across redeploys.
+
+### VPS / 自有服务器 / Self-hosted VPS
+
+```bash
+cd Ombre-Brain
+
+# 拉取最新代码
+git pull origin main
+
+# 方式 A：Docker 部署
+docker compose down
+docker compose build
+docker compose up -d
+
+# 方式 B：直接 Python 运行
+pip install -r requirements.txt
+# 重启你的进程管理器（systemd / supervisord / pm2 等）
+sudo systemctl restart ombre-brain   # 示例
+```
+
+> **通用注意事项 / General notes:**
+> - 更新不会影响你的记忆数据（存在 volume 或 buckets 目录里）
+> - 如果 `requirements.txt` 有变化，Docker 用户重新 build 即可自动处理；非 Docker 用户需手动 `pip install -r requirements.txt`
+> - 更新后访问 `/health` 验证服务正常
+> - Updates never affect your memory data (stored in volumes or buckets directory)
+> - If `requirements.txt` changed, Docker rebuild handles it automatically; non-Docker users need `pip install -r requirements.txt`
+> - After updating, visit `/health` to verify the service is running
+
+## 测试 / Testing
+
+测试套件覆盖规格书所有场景（场景 01–11），以及 B-01 至 B-10 全部 bug 修复的回归测试。
+
+The test suite covers all spec scenarios (01–11) and regression tests for every bug fix (B-01 to B-10).
+
+### 快速运行 / Quick Start
+
+```bash
+pip install pytest pytest-asyncio
+pytest tests/                          # 全部测试
+pytest tests/unit/                     # 单元测试
+pytest tests/integration/             # 集成测试（场景全流程）
+pytest tests/regression/              # 回归测试（B-01..B-10）
+pytest tests/ -k "B01"               # 单个回归测试
+pytest tests/ -v                       # 详细输出
+```
+
+### 测试层级 / Test Layers
+
+| 目录 Directory | 内容 Contents |
+|---|---|
+| `tests/unit/` | 单独测试 calculate_score、topic_score、时间得分、CRUD 等核心函数 |
+| `tests/integration/` | 场景全流程：冷启动、hold、search、trace、decay、feel 等 11 个场景 |
+| `tests/regression/` | 每个 bug（B-01 至 B-10）独立回归测试，含边界条件 |
+
+### 回归测试覆盖 / Regression Coverage
+
+| 文件 | Bug | 核心断言 |
+|---|---|---|
+| `test_issue_B01.py` | resolved 桶不再自动归档 | `update(resolved=True)` 后桶留在 `dynamic/`，搜索仍可命中，得分 ×0.05 |
+| `test_issue_B03.py` | float activation_count 不被 int() 截断 | 1.3 > 1.0 得分，`_time_ripple` 写入 0.3 增量 |
+| `test_issue_B04.py` | create() 初始 activation_count=0 | 新建桶满足冷启动条件，touch() 后变 1 |
+| `test_issue_B05.py` | 时间衰减系数 0.02（原 0.1）| 30天 ≈ 0.549，非旧值 0.049 |
+| `test_issue_B06.py` | w_time 默认 1.5（原 2.5）| `BucketManager.w_time == 1.5` |
+| `test_issue_B07.py` | content_weight 默认 1.0（原 3.0）| 名字完全匹配得分 > 内容模糊匹配 |
+| `test_issue_B08.py` | auto_resolve 同轮应用降权因子 | stale meta 修复后 score ×0.05 立即生效 |
+| `test_issue_B09.py` | hold() 保留用户传入的 valence/arousal | 用户值优先于 analyze() 结果 |
+| `test_issue_B10.py` | feel 桶 domain=[] 不被填充 | feel 桶保持 `[]`；dynamic 桶正确填 `["未分类"]` |
+
+> **测试隔离**：所有测试运行在 `tmp_path` 临时目录，绝不触碰真实记忆数据。
+> **Test isolation**: All tests run in `tmp_path` — your real memory data is never touched.
+
+---
 
 ## License
 

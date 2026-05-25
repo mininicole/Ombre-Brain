@@ -16,8 +16,6 @@ import json
 import math
 import sqlite3
 import logging
-import asyncio
-from pathlib import Path
 
 from openai import AsyncOpenAI
 
@@ -34,8 +32,12 @@ class EmbeddingEngine:
         dehy_cfg = config.get("dehydration", {})
         embed_cfg = config.get("embedding", {})
 
-        self.api_key = dehy_cfg.get("api_key", "")
-        self.base_url = dehy_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai/")
+        self.api_key = (embed_cfg.get("api_key") or dehy_cfg.get("api_key") or "").strip()
+        self.base_url = (
+            (embed_cfg.get("base_url") or "").strip()
+            or (dehy_cfg.get("base_url") or "").strip()
+            or "https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
         self.model = embed_cfg.get("model", "gemini-embedding-001")
         self.enabled = bool(self.api_key) and embed_cfg.get("enabled", True)
 
