@@ -354,8 +354,8 @@ async def breath_hook(request):
             pool = candidates[1:min(20, len(candidates))]
             random.shuffle(pool)
             candidates = top1 + pool + candidates[min(20, len(candidates)):]
-        # Hard cap: max 20 surfacing buckets in hook
-        candidates = candidates[:20]
+        # Hard cap: max 8 surfacing buckets in hook
+        candidates = candidates[:8]
 
         for b in candidates:
             if token_budget <= 0:
@@ -506,10 +506,10 @@ async def breath(
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
-    max_results: int = 20,
+    max_results: int = 10,
     importance_min: int = -1,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -588,15 +588,19 @@ async def breath(
             f"{len(pinned_buckets)} pinned, {len(unresolved)} unresolved"
         )
 
+        # --- Surface most RECENT unresolved buckets (by created desc) ---
+        # --- 浮现最近的未解决桶（按创建时间倒序）---
+        # 改为时间倒序而非权重降序：避免每次开窗浮现同一批高权重老桶；
+        # 老记忆的随机召回交给 night-fall 自动浮梦。
         scored = sorted(
             unresolved,
-            key=lambda b: decay_engine.calculate_score(b["metadata"]),
+            key=lambda b: b["metadata"].get("created", ""),
             reverse=True,
         )
 
         if scored:
-            top_scores = [(b["metadata"].get("name", b["id"]), decay_engine.calculate_score(b["metadata"])) for b in scored[:5]]
-            logger.info(f"Top unresolved scores: {top_scores}")
+            top_recent = [(b["metadata"].get("name", b["id"]), b["metadata"].get("created", "")) for b in scored[:5]]
+            logger.info(f"Most recent unresolved: {top_recent}")
 
         # --- Cold-start detection: never-seen important buckets surface first ---
         # --- 冷启动检测：从未被访问过且重要度>=8的桶优先插入最前面（最多2个）---
@@ -617,17 +621,9 @@ async def breath(
         for r in pinned_results:
             token_budget -= count_tokens_approx(r)
 
+        # Cold-start buckets stay at front; rest already sorted by recency.
+        # 冷启动桶置顶，其余已按时间倒序排列，不再随机洗牌。
         candidates = list(scored_with_cold)
-        if len(candidates) > 1:
-            # Cold-start buckets stay at front; shuffle rest from top-20
-            n_cold = len(cold_start)
-            non_cold = candidates[n_cold:]
-            if len(non_cold) > 1:
-                top1 = [non_cold[0]]
-                pool = non_cold[1:min(20, len(non_cold))]
-                random.shuffle(pool)
-                non_cold = top1 + pool + non_cold[min(20, len(non_cold)):]
-            candidates = cold_start + non_cold
         # Hard cap: never surface more than max_results buckets
         candidates = candidates[:max_results]
 
@@ -1155,8 +1151,8 @@ async def pulse(include_archive: bool = False) -> str:
 # Claude then decides: resolve some, write feels, or do nothing.
 # =============================================================
 @mcp.tool()
-async def dream() -> str:
-    """做梦——读取最近新增的记忆桶,供你自省。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
+async def dream(full: bool = False) -> str:
+    """做梦——读取最近新增的记忆桶,供你自省。默认精简(标题+情绪坐标+一行摘要);full=True返回每桶正文前500字+关联/结晶提示。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
     await decay_engine.ensure_started()
 
     try:
@@ -1180,6 +1176,21 @@ async def dream() -> str:
     if not recent:
         return "没有需要消化的新记忆。"
 
+    def _one_line_summary(raw: str) -> str:
+        """提取一行摘要：优先 JSON 的 summary 字段，否则取正文首行/前80字。"""
+        text = strip_wikilinks(raw or "").strip()
+        try:
+            import json as _json
+            start = text.find("{")
+            if start != -1:
+                obj = _json.loads(text[start:])
+                if isinstance(obj, dict) and obj.get("summary"):
+                    return str(obj["summary"]).strip()
+        except Exception:
+            pass
+        first = text.split("\n", 1)[0].strip()
+        return first[:80] + ("…" if len(first) > 80 else "")
+
     parts = []
     for b in recent:
         meta = b["metadata"]
@@ -1188,13 +1199,20 @@ async def dream() -> str:
         val = meta.get("valence", 0.5)
         aro = meta.get("arousal", 0.3)
         created = meta.get("created", "")
-        parts.append(
-            f"[{meta.get('name', b['id'])}]{resolved_tag} "
-            f"主题:{domains} V{val:.1f}/A{aro:.1f} "
-            f"创建:{created}\n"
-            f"ID: {b['id']}\n"
-            f"{strip_wikilinks(b['content'][:500])}"
-        )
+        if full:
+            parts.append(
+                f"[{meta.get('name', b['id'])}]{resolved_tag} "
+                f"主题:{domains} V{val:.1f}/A{aro:.1f} "
+                f"创建:{created}\n"
+                f"ID: {b['id']}\n"
+                f"{strip_wikilinks(b['content'][:500])}"
+            )
+        else:
+            parts.append(
+                f"[{meta.get('name', b['id'])}]{resolved_tag} "
+                f"V{val:.1f}/A{aro:.1f} ID:{b['id']}\n"
+                f"  {_one_line_summary(b['content'])}"
+            )
 
     header = (
         "=== Dreaming ===\n"
@@ -1210,7 +1228,7 @@ async def dream() -> str:
 
     # --- Connection hint: find most similar pair via embeddings ---
     connection_hint = ""
-    if embedding_engine and embedding_engine.enabled and len(recent) >= 2:
+    if full and embedding_engine and embedding_engine.enabled and len(recent) >= 2:
         try:
             best_pair = None
             best_sim = 0.0
@@ -1238,7 +1256,7 @@ async def dream() -> str:
 
     # --- Feel crystallization hint: detect repeated feel themes ---
     crystal_hint = ""
-    if embedding_engine and embedding_engine.enabled:
+    if full and embedding_engine and embedding_engine.enabled:
         try:
             feels = [b for b in all_buckets if b["metadata"].get("type") == "feel"]
             if len(feels) >= 3:
@@ -2008,6 +2026,47 @@ async def api_forget(request):
         return JSONResponse({"ok": bool(success), "id": bucket_id})
     except Exception as e:
         logger.error(f"/api/forget failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/edit/{bucket_id}", methods=["POST"])
+async def api_edit(request):
+    """编辑一条记忆的正文/标题/标签。POST /api/edit/{bucket_id}
+    Body: {"content": "...", "name": "...", "tags": "a,b"}（都可选，只传需改的）"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    bucket_id = request.path_params.get("bucket_id", "").strip()
+    if not bucket_id:
+        return JSONResponse({"error": "missing bucket_id"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    updates = {}
+    if "content" in body and body["content"] is not None:
+        updates["content"] = str(body["content"])
+    if "name" in body and str(body.get("name", "")).strip():
+        updates["name"] = str(body["name"]).strip()
+    if "tags" in body and body["tags"] is not None:
+        tags_val = body["tags"]
+        if isinstance(tags_val, str):
+            tags_val = [t.strip() for t in tags_val.split(",") if t.strip()]
+        updates["tags"] = tags_val
+    if not updates:
+        return JSONResponse({"error": "no editable fields provided"}, status_code=400)
+
+    try:
+        success = await bucket_mgr.update(bucket_id, **updates)
+        if success and "content" in updates:
+            try:
+                await embedding_engine.generate_and_store(bucket_id, updates["content"])
+            except Exception as e:
+                logger.warning(f"/api/edit re-embed failed: {e}")
+        return JSONResponse({"ok": bool(success), "id": bucket_id})
+    except Exception as e:
+        logger.error(f"/api/edit failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
