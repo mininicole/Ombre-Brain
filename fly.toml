@@ -14,9 +14,9 @@ primary_region = 'nrt'
   internal_port = 8000
   force_https = true
   # 挂起模式：闲时省钱，请求进来时 Fly 自动唤醒（首次响应慢 1-2s）
-  auto_stop_machines = 'suspend'
+  auto_stop_machines = false
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [[http_service.checks]]
     interval = '60s'
