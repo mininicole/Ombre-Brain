@@ -2011,6 +2011,47 @@ async def api_forget(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/edit/{bucket_id}", methods=["POST"])
+async def api_edit(request):
+    """编辑一条记忆的正文/标题/标签。POST /api/edit/{bucket_id}
+    Body: {"content": "...", "name": "...", "tags": "a,b"}（都可选，只传需改的）"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    bucket_id = request.path_params.get("bucket_id", "").strip()
+    if not bucket_id:
+        return JSONResponse({"error": "missing bucket_id"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    updates = {}
+    if "content" in body and body["content"] is not None:
+        updates["content"] = str(body["content"])
+    if "name" in body and str(body.get("name", "")).strip():
+        updates["name"] = str(body["name"]).strip()
+    if "tags" in body and body["tags"] is not None:
+        tags_val = body["tags"]
+        if isinstance(tags_val, str):
+            tags_val = [t.strip() for t in tags_val.split(",") if t.strip()]
+        updates["tags"] = tags_val
+    if not updates:
+        return JSONResponse({"error": "no editable fields provided"}, status_code=400)
+
+    try:
+        success = await bucket_mgr.update(bucket_id, **updates)
+        if success and "content" in updates:
+            try:
+                await embedding_engine.generate_and_store(bucket_id, updates["content"])
+            except Exception as e:
+                logger.warning(f"/api/edit re-embed failed: {e}")
+        return JSONResponse({"ok": bool(success), "id": bucket_id})
+    except Exception as e:
+        logger.error(f"/api/edit failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/api/remember", methods=["POST"])
 async def api_remember(request):
     """Store a memory. POST body: {"content": "...", "feel": false, "importance": 5}

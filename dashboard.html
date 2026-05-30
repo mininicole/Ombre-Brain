@@ -621,6 +621,11 @@
 
 <div class="content" id="list-view">
   <div class="filters" id="filters"></div>
+  <div class="batch-bar" id="batch-bar" style="display:flex;align-items:center;gap:12px;padding:6px 4px;font-size:12px;color:var(--text-dim);">
+    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="select-all" onclick="toggleSelectAll(this)" /> 全选</label>
+    <span id="select-count">已选 0</span>
+    <button id="batch-del-btn" onclick="batchDelete()" disabled style="margin-left:auto;background:none;border:1px solid var(--border);color:var(--negative);border-radius:14px;padding:4px 12px;cursor:pointer;">🗑 删除选中</button>
+  </div>
   <div class="bucket-list" id="bucket-list">
     <div class="loading">加载中…</div>
   </div>
@@ -1144,16 +1149,92 @@ function renderBuckets(buckets) {
     var vPos = Math.round(b.valence * 100);
     var modelV = b.model_valence != null ? ' → V' + b.model_valence.toFixed(1) : '';
     var timeAgo = formatTimeAgo(b.last_active || b.created);
-    return '<div class="bucket-row" onclick="showDetail(\'' + b.id + '\')">' +
-      '<span class="icon">' + icon + '</span>' +
-      '<span class="name" title="' + esc(b.name) + '">' + esc(b.name) + '</span>' +
-      '<span class="domain">' + (b.domain || []).join(', ') + '</span>' +
-      '<span class="emotion"><span class="v-bar"><span class="v-dot" style="left:' + vPos + '%"></span></span>' + modelV + '</span>' +
-      '<span class="score">' + b.score.toFixed(2) + '</span>' +
-      '<span class="time">' + timeAgo + '</span>' +
-      '<span class="preview">' + esc(b.content_preview) + '</span>' +
+    return '<div class="bucket-row">' +
+      '<input type="checkbox" class="row-check" data-id="' + b.id + '" onclick="event.stopPropagation();onRowCheck();" style="cursor:pointer;" />' +
+      '<span class="icon" onclick="showDetail(\'' + b.id + '\')">' + icon + '</span>' +
+      '<span class="name" title="' + esc(b.name) + '" onclick="showDetail(\'' + b.id + '\')">' + esc(b.name) + '</span>' +
+      '<span class="domain" onclick="showDetail(\'' + b.id + '\')">' + (b.domain || []).join(', ') + '</span>' +
+      '<span class="emotion" onclick="showDetail(\'' + b.id + '\')"><span class="v-bar"><span class="v-dot" style="left:' + vPos + '%"></span></span>' + modelV + '</span>' +
+      '<span class="score" onclick="showDetail(\'' + b.id + '\')">' + b.score.toFixed(2) + '</span>' +
+      '<span class="time" onclick="showDetail(\'' + b.id + '\')">' + timeAgo + '</span>' +
+      '<span class="preview" onclick="showDetail(\'' + b.id + '\')">' + esc(b.content_preview) + '</span>' +
+      '<button class="row-del" title="删除" onclick="event.stopPropagation();deleteBucket(\'' + b.id + '\',\'' + esc(b.name).replace(/'/g,"\\'") + '\')" style="background:none;border:none;color:var(--negative);cursor:pointer;font-size:14px;padding:0 6px;">🗑</button>' +
     '</div>';
   }).join('');
+  onRowCheck();
+}
+
+// --- 删除 / 编辑 / 批量 ---
+async function deleteBucket(id, name) {
+  if (!confirm('确定删除记忆桶「' + (name || id) + '」？此操作不可撤销。')) return;
+  try {
+    const res = await authFetch(BASE + '/api/forget/' + id, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error((data && data.error) ? data.error : '删除失败');
+    allBuckets = allBuckets.filter(function(b) { return b.id !== id; });
+    updateStats();
+    renderBuckets(filterBuckets(allBuckets));
+    if (typeof closeDetail === 'function') closeDetail();
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+function getCheckedIds() {
+  return Array.from(document.querySelectorAll('.row-check:checked')).map(function(c) { return c.dataset.id; });
+}
+
+function onRowCheck() {
+  var ids = getCheckedIds();
+  var cnt = document.getElementById('select-count');
+  var btn = document.getElementById('batch-del-btn');
+  if (cnt) cnt.textContent = '已选 ' + ids.length;
+  if (btn) btn.disabled = ids.length === 0;
+}
+
+function toggleSelectAll(box) {
+  document.querySelectorAll('.row-check').forEach(function(c) { c.checked = box.checked; });
+  onRowCheck();
+}
+
+async function batchDelete() {
+  var ids = getCheckedIds();
+  if (!ids.length) return;
+  if (!confirm('确定删除选中的 ' + ids.length + ' 个记忆桶？此操作不可撤销。')) return;
+  var ok = 0, fail = 0;
+  for (var i = 0; i < ids.length; i++) {
+    try {
+      var res = await authFetch(BASE + '/api/forget/' + ids[i], { method: 'DELETE' });
+      var data = await res.json();
+      if (res.ok && data.ok) { ok++; allBuckets = allBuckets.filter(function(b) { return b.id !== ids[i]; }); }
+      else fail++;
+    } catch (e) { fail++; }
+  }
+  var sa = document.getElementById('select-all'); if (sa) sa.checked = false;
+  updateStats();
+  renderBuckets(filterBuckets(allBuckets));
+  alert('删除完成：成功 ' + ok + (fail ? '，失败 ' + fail : ''));
+}
+
+async function saveEdit(id) {
+  var nameEl = document.getElementById('edit-name');
+  var tagsEl = document.getElementById('edit-tags');
+  var contentEl = document.getElementById('edit-content');
+  var body = {};
+  if (nameEl) body.name = nameEl.value;
+  if (tagsEl) body.tags = tagsEl.value;
+  if (contentEl) body.content = contentEl.value;
+  try {
+    var res = await authFetch(BASE + '/api/edit/' + id, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    var data = await res.json();
+    if (!res.ok || !data.ok) throw new Error((data && data.error) ? data.error : '保存失败');
+    await loadBuckets();
+    showDetail(id);
+  } catch (e) {
+    alert('保存失败: ' + e.message);
+  }
 }
 
 async function searchBuckets(query) {
@@ -1195,7 +1276,18 @@ async function showDetail(id) {
         '<div class="field"><label>创建</label>' + (meta.created || '—') + '</div>' +
         '<div class="field"><label>最后活跃</label>' + (meta.last_active || '—') + '</div>' +
       '</div>' +
-      '<div class="detail-content">' + esc(b.content) + '</div>';
+      '<div class="detail-edit" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">' +
+        '<label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:4px;">标题</label>' +
+        '<input id="edit-name" value="' + esc(meta.name || '') + '" style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);" />' +
+        '<label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:4px;">标签（逗号分隔）</label>' +
+        '<input id="edit-tags" value="' + esc((meta.tags || []).join(', ')) + '" style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);" />' +
+        '<label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:4px;">正文</label>' +
+        '<textarea id="edit-content" rows="10" style="width:100%;box-sizing:border-box;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:inherit;font-size:13px;line-height:1.6;">' + esc(b.content) + '</textarea>' +
+        '<div style="display:flex;gap:10px;margin-top:12px;">' +
+          '<button onclick="saveEdit(\'' + id + '\')" style="flex:1;background:var(--accent);border:none;color:#fff;border-radius:8px;padding:8px;cursor:pointer;">💾 保存</button>' +
+          '<button onclick="deleteBucket(\'' + id + '\',\'' + esc(meta.name || id).replace(/'/g,"\\'") + '\')" style="background:none;border:1px solid var(--negative);color:var(--negative);border-radius:8px;padding:8px 16px;cursor:pointer;">🗑 删除</button>' +
+        '</div>' +
+      '</div>';
   } catch (e) {
     content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
   }
