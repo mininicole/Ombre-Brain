@@ -506,10 +506,10 @@ async def breath(
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
-    max_results: int = 20,
+    max_results: int = 10,
     importance_min: int = -1,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -588,15 +588,19 @@ async def breath(
             f"{len(pinned_buckets)} pinned, {len(unresolved)} unresolved"
         )
 
+        # --- Surface most RECENT unresolved buckets (by created desc) ---
+        # --- 浮现最近的未解决桶（按创建时间倒序）---
+        # 改为时间倒序而非权重降序：避免每次开窗浮现同一批高权重老桶；
+        # 老记忆的随机召回交给 night-fall 自动浮梦。
         scored = sorted(
             unresolved,
-            key=lambda b: decay_engine.calculate_score(b["metadata"]),
+            key=lambda b: b["metadata"].get("created", ""),
             reverse=True,
         )
 
         if scored:
-            top_scores = [(b["metadata"].get("name", b["id"]), decay_engine.calculate_score(b["metadata"])) for b in scored[:5]]
-            logger.info(f"Top unresolved scores: {top_scores}")
+            top_recent = [(b["metadata"].get("name", b["id"]), b["metadata"].get("created", "")) for b in scored[:5]]
+            logger.info(f"Most recent unresolved: {top_recent}")
 
         # --- Cold-start detection: never-seen important buckets surface first ---
         # --- 冷启动检测：从未被访问过且重要度>=8的桶优先插入最前面（最多2个）---
@@ -617,17 +621,9 @@ async def breath(
         for r in pinned_results:
             token_budget -= count_tokens_approx(r)
 
+        # Cold-start buckets stay at front; rest already sorted by recency.
+        # 冷启动桶置顶，其余已按时间倒序排列，不再随机洗牌。
         candidates = list(scored_with_cold)
-        if len(candidates) > 1:
-            # Cold-start buckets stay at front; shuffle rest from top-20
-            n_cold = len(cold_start)
-            non_cold = candidates[n_cold:]
-            if len(non_cold) > 1:
-                top1 = [non_cold[0]]
-                pool = non_cold[1:min(20, len(non_cold))]
-                random.shuffle(pool)
-                non_cold = top1 + pool + non_cold[min(20, len(non_cold)):]
-            candidates = cold_start + non_cold
         # Hard cap: never surface more than max_results buckets
         candidates = candidates[:max_results]
 
