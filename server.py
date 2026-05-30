@@ -354,8 +354,8 @@ async def breath_hook(request):
             pool = candidates[1:min(20, len(candidates))]
             random.shuffle(pool)
             candidates = top1 + pool + candidates[min(20, len(candidates)):]
-        # Hard cap: max 20 surfacing buckets in hook
-        candidates = candidates[:20]
+        # Hard cap: max 8 surfacing buckets in hook
+        candidates = candidates[:8]
 
         for b in candidates:
             if token_budget <= 0:
@@ -1155,8 +1155,8 @@ async def pulse(include_archive: bool = False) -> str:
 # Claude then decides: resolve some, write feels, or do nothing.
 # =============================================================
 @mcp.tool()
-async def dream() -> str:
-    """做梦——读取最近新增的记忆桶,供你自省。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
+async def dream(full: bool = False) -> str:
+    """做梦——读取最近新增的记忆桶,供你自省。默认精简(标题+情绪坐标+一行摘要);full=True返回每桶正文前500字+关联/结晶提示。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
     await decay_engine.ensure_started()
 
     try:
@@ -1180,6 +1180,21 @@ async def dream() -> str:
     if not recent:
         return "没有需要消化的新记忆。"
 
+    def _one_line_summary(raw: str) -> str:
+        """提取一行摘要：优先 JSON 的 summary 字段，否则取正文首行/前80字。"""
+        text = strip_wikilinks(raw or "").strip()
+        try:
+            import json as _json
+            start = text.find("{")
+            if start != -1:
+                obj = _json.loads(text[start:])
+                if isinstance(obj, dict) and obj.get("summary"):
+                    return str(obj["summary"]).strip()
+        except Exception:
+            pass
+        first = text.split("\n", 1)[0].strip()
+        return first[:80] + ("…" if len(first) > 80 else "")
+
     parts = []
     for b in recent:
         meta = b["metadata"]
@@ -1188,13 +1203,20 @@ async def dream() -> str:
         val = meta.get("valence", 0.5)
         aro = meta.get("arousal", 0.3)
         created = meta.get("created", "")
-        parts.append(
-            f"[{meta.get('name', b['id'])}]{resolved_tag} "
-            f"主题:{domains} V{val:.1f}/A{aro:.1f} "
-            f"创建:{created}\n"
-            f"ID: {b['id']}\n"
-            f"{strip_wikilinks(b['content'][:500])}"
-        )
+        if full:
+            parts.append(
+                f"[{meta.get('name', b['id'])}]{resolved_tag} "
+                f"主题:{domains} V{val:.1f}/A{aro:.1f} "
+                f"创建:{created}\n"
+                f"ID: {b['id']}\n"
+                f"{strip_wikilinks(b['content'][:500])}"
+            )
+        else:
+            parts.append(
+                f"[{meta.get('name', b['id'])}]{resolved_tag} "
+                f"V{val:.1f}/A{aro:.1f} ID:{b['id']}\n"
+                f"  {_one_line_summary(b['content'])}"
+            )
 
     header = (
         "=== Dreaming ===\n"
@@ -1210,7 +1232,7 @@ async def dream() -> str:
 
     # --- Connection hint: find most similar pair via embeddings ---
     connection_hint = ""
-    if embedding_engine and embedding_engine.enabled and len(recent) >= 2:
+    if full and embedding_engine and embedding_engine.enabled and len(recent) >= 2:
         try:
             best_pair = None
             best_sim = 0.0
@@ -1238,7 +1260,7 @@ async def dream() -> str:
 
     # --- Feel crystallization hint: detect repeated feel themes ---
     crystal_hint = ""
-    if embedding_engine and embedding_engine.enabled:
+    if full and embedding_engine and embedding_engine.enabled:
         try:
             feels = [b for b in all_buckets if b["metadata"].get("type") == "feel"]
             if len(feels) >= 3:
