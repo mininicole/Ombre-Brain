@@ -9,21 +9,21 @@ primary_region = 'nrt'
 [env]
   OMBRE_TRANSPORT = 'streamable-http'
   OMBRE_BUCKETS_DIR = '/app/buckets'
+  # Night-Fall 浮现调参：默认 0.62 太严，开窗几乎只走 affect 单通道，
+  # 把门槛降到 0.50（affect 单轴偏差容忍从 ±0.27 放宽到 ±0.35），
+  # 自发概率 0.02 → 0.06，attempt 跟着降以保持"低信号不消耗机会"语义。
+  NIGHT_FALL_SURFACE_THRESHOLD = '0.50'
+  NIGHT_FALL_ATTEMPT_THRESHOLD = '0.35'
+  NIGHT_FALL_SPONTANEOUS_SURFACE_PROB = '0.06'
 
 [http_service]
   internal_port = 8000
   force_https = true
-  # 挂起模式：闲时省钱，请求进来时 Fly 自动唤醒（首次响应慢 1-2s）
-  auto_stop_machines = false
+  # 挂起模式：闲时 suspend 到内存快照，请求进来时 ~300ms 唤醒（几乎无感）
+  # 不用 stop：那是冷启动 5-15s，会让 MCP 首次调用超时
+  auto_stop_machines = 'suspend'
   auto_start_machines = true
-  min_machines_running = 1
-
-  [[http_service.checks]]
-    interval = '60s'
-    timeout = '5s'
-    grace_period = '15s'
-    method = 'GET'
-    path = '/health'
+  min_machines_running = 0
 
 [[vm]]
   size = 'shared-cpu-1x'

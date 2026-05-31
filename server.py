@@ -2177,9 +2177,16 @@ if __name__ == "__main__":
         # --- Application-level keepalive: ping /health every 60s ---
         # --- 应用层保活：每 60 秒 ping 一次 /health，防止 Cloudflare Tunnel 空闲断连 ---
         async def _keepalive_loop():
-            await asyncio.sleep(10)  # Wait for server to fully start
+            # 起步即触发 + warmup /mcp/，避免 boot 后第一个客户端请求撞 404 窗口
+            warmed = False
             async with httpx.AsyncClient() as client:
                 while True:
+                    if not warmed and transport == "streamable-http":
+                        try:
+                            await client.get(f"http://localhost:{OMBRE_PORT}/mcp/", timeout=3)
+                        except Exception:
+                            pass
+                        warmed = True
                     try:
                         await client.get(f"http://localhost:{OMBRE_PORT}/health", timeout=5)
                         logger.debug("Keepalive ping OK / 保活 ping 成功")
@@ -2216,6 +2223,26 @@ if __name__ == "__main__":
             logger.info(f"🔒 Bearer auth ENABLED (token length: {len(OMBRE_AUTH_TOKEN)}) / 鉴权已启用")
         else:
             logger.warning("⚠️  Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
+
+        # FastMCP streamable-http 挂在 /mcp/（带尾斜杠）。
+        # 客户端发 /mcp（无斜杠）通常被 307 重定向，但有些客户端不跟随，
+        # wake 瞬间还可能撞上路由未就绪的 404。透明 rewrite path。
+        if transport == "streamable-http":
+            _inner_app = _app
+
+            class _TrailingSlashMcpMiddleware:
+                def __init__(self, asgi_app):
+                    self._asgi = asgi_app
+
+                async def __call__(self, scope, receive, send):
+                    if scope["type"] == "http" and scope.get("path") == "/mcp":
+                        scope = dict(scope)
+                        scope["path"] = "/mcp/"
+                        if scope.get("raw_path") == b"/mcp":
+                            scope["raw_path"] = b"/mcp/"
+                    await self._asgi(scope, receive, send)
+
+            _app = _TrailingSlashMcpMiddleware(_inner_app)
 
         uvicorn.run(_app, host="0.0.0.0", port=OMBRE_PORT)
     else:
