@@ -2224,26 +2224,6 @@ if __name__ == "__main__":
         else:
             logger.warning("⚠️  Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
 
-        # FastMCP streamable-http 挂在 /mcp/（带尾斜杠）。
-        # 客户端发 /mcp（无斜杠）通常被 307 重定向，但有些客户端不跟随，
-        # wake 瞬间还可能撞上路由未就绪的 404。透明 rewrite path。
-        if transport == "streamable-http":
-            _inner_app = _app
-
-            class _TrailingSlashMcpMiddleware:
-                def __init__(self, asgi_app):
-                    self._asgi = asgi_app
-
-                async def __call__(self, scope, receive, send):
-                    if scope["type"] == "http" and scope.get("path") == "/mcp":
-                        scope = dict(scope)
-                        scope["path"] = "/mcp/"
-                        if scope.get("raw_path") == b"/mcp":
-                            scope["raw_path"] = b"/mcp/"
-                    await self._asgi(scope, receive, send)
-
-            _app = _TrailingSlashMcpMiddleware(_inner_app)
-
         uvicorn.run(_app, host="0.0.0.0", port=OMBRE_PORT)
     else:
         mcp.run(transport=transport)
