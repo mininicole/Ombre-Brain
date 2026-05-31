@@ -25,6 +25,18 @@ primary_region = 'nrt'
   auto_start_machines = true
   min_machines_running = 0
 
+  # ⚠️ 这个 health check 必须保留。它有两个作用：
+  # 1. fly proxy 的 readiness probe — 看到 /health 200 才把外部流量转给 machine
+  # 2. 检测 ombre 进程是否健康
+  # 删掉它会导致 wake 后 fly proxy 在 ASGI lifespan 没跑完时就转发请求 → 404
+  # health check 流量是 fly 内部的，不算 user inbound，不会阻止 suspend
+  [[http_service.checks]]
+    interval = '60s'
+    timeout = '5s'
+    grace_period = '15s'
+    method = 'GET'
+    path = '/health'
+
 [[vm]]
   size = 'shared-cpu-1x'
   memory = '512mb'
