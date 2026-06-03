@@ -441,6 +441,9 @@ async def api_recall(request):
         max_results = int(body.get("max_results") or 5)
     except (TypeError, ValueError):
         max_results = 5
+    # surface_dreams 控制是否调用 Night-Fall auto-surface。
+    # 默认 True；高频调用方（TG bot）应明确传 False 把梦留给深度对话端。
+    surface_dreams = bool(body.get("surface_dreams", True))
     try:
         text = await breath(
             query=query,
@@ -448,9 +451,9 @@ async def api_recall(request):
             max_results=max(1, min(max_results, 20)),
         )
         # Night-Fall auto-surface — query 分支默认不触发，这里手动调一下，
-        # 让 TG 等 REST 客户端也能有"梦自己浮上来"的体验。
+        # 让 REST 客户端也能有"梦自己浮上来"的体验。
         # 共振失败就什么都不发生（梦留着），共振命中就消费一个并 append 到 text。
-        if _night_fall_auto_surface is not None:
+        if surface_dreams and _night_fall_auto_surface is not None:
             try:
                 dream_block = await _night_fall_auto_surface()
                 if dream_block:
