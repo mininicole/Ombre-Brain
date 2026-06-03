@@ -447,6 +447,16 @@ async def api_recall(request):
             max_tokens=max(500, min(max_tokens, 10000)),
             max_results=max(1, min(max_results, 20)),
         )
+        # Night-Fall auto-surface — query 分支默认不触发，这里手动调一下，
+        # 让 TG 等 REST 客户端也能有"梦自己浮上来"的体验。
+        # 共振失败就什么都不发生（梦留着），共振命中就消费一个并 append 到 text。
+        if _night_fall_auto_surface is not None:
+            try:
+                dream_block = await _night_fall_auto_surface()
+                if dream_block:
+                    text = (text or "") + "\n\n" + dream_block
+            except Exception as e:
+                logger.warning(f"/api/recall auto-surface failed: {e}")
         return JSONResponse({"text": text or ""})
     except Exception as e:
         logger.warning(f"/api/recall failed: {e}")
