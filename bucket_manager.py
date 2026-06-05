@@ -373,6 +373,94 @@ class BucketManager:
         except Exception as e:
             logger.warning(f"Failed to touch bucket / 触碰桶失败: {bucket_id}: {e}")
 
+    async def add_comment(
+        self,
+        bucket_id: str,
+        content: str,
+        *,
+        author: str = "Evan",
+        valence: float | None = None,
+        arousal: float | None = None,
+        touch: bool = True,
+    ) -> Optional[dict]:
+        """
+        Append a 年轮 (ring/comment) to an existing bucket without changing its body.
+        给已有桶追加年轮（评论），不改正文。
+
+        Each comment is a dict {id, created, author, content, valence?, arousal?}
+        stored under metadata.comments. touch=True 同时刷新 last_active 并触发时间涟漪。
+        """
+        file_path = self._find_bucket_file(bucket_id)
+        if not file_path or not content or not str(content).strip():
+            return None
+
+        try:
+            post = frontmatter.load(file_path)
+        except Exception as e:
+            logger.warning(f"Failed to load bucket for comment / 加载年轮目标失败: {file_path}: {e}")
+            return None
+
+        comments = post.get("comments", [])
+        if not isinstance(comments, list):
+            comments = []
+
+        new_content_clean = str(content).strip()
+        # 归一化：折叠所有空白，比较时大小写不敏感（注释里 'EN' / 'En' 算同一句）
+        new_normalized = " ".join(new_content_clean.split()).casefold()
+        new_author = str(author or "Evan")
+        for existing in comments:
+            if not isinstance(existing, dict):
+                continue
+            existing_content = str(existing.get("content", "")).strip()
+            existing_normalized = " ".join(existing_content.split()).casefold()
+            existing_author = str(existing.get("author") or "")
+            if existing_normalized == new_normalized and existing_author == new_author:
+                logger.info(
+                    f"Comment dedup: skip duplicate on {bucket_id} "
+                    f"(matches existing #{existing.get('id', '?')})"
+                )
+                # 返回已存在的那条 + 标记，让上层 MCP 工具知道是 dedup
+                return {**existing, "_deduped": True}
+
+        now = now_iso()
+        entry = {
+            "id": generate_bucket_id(),
+            "created": now,
+            "author": new_author,
+            "content": new_content_clean,
+        }
+        if valence is not None:
+            entry["valence"] = max(0.0, min(1.0, float(valence)))
+        if arousal is not None:
+            entry["arousal"] = max(0.0, min(1.0, float(arousal)))
+
+        comments.append(entry)
+        post["comments"] = comments
+        post["comment_count"] = len(comments)
+        post["updated_at"] = now
+        if touch:
+            post["last_active"] = now
+            post["activation_count"] = post.get("activation_count", 0) + 1
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+        except OSError as e:
+            logger.error(f"Failed to write bucket comment / 写入年轮失败: {file_path}: {e}")
+            return None
+
+        if touch:
+            try:
+                current_time = datetime.fromisoformat(
+                    str(post.get("created", post.get("last_active", "")))
+                )
+                await self._time_ripple(bucket_id, current_time)
+            except Exception:
+                pass  # ripple failure shouldn't fail the comment
+
+        logger.info(f"Added bucket comment / 已追加年轮: {bucket_id}#{entry['id']}")
+        return entry
+
     async def _time_ripple(self, source_id: str, reference_time: datetime, hours: float = 48.0) -> None:
         """
         Slightly boost activation_count of buckets created/activated near the reference time.

@@ -1239,6 +1239,9 @@ async def comment_bucket(
     if not entry:
         return f"年轮写入失败: {bucket_id}"
 
+    if entry.get("_deduped"):
+        return f"已有相同年轮 #{entry['id']} 在 {bucket_id} 上，跳过(避免重复)"
+
     total = (await bucket_mgr.get(bucket_id) or {}).get("metadata", {}).get("comment_count", 1)
     return f"已在 {bucket_id} 追加年轮 #{entry['id']} (共 {total} 层)"
 
