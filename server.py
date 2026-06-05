@@ -733,6 +733,48 @@ async def breath(
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
                 continue
 
+        # --- 念头 (brain wave): occasional random pull from older memory ---
+        # 想法：每次 breath 有 ~35% 概率从老桶里随机抓一条，模拟"突然想起来"。
+        # 不打标记、不解释——它和其它浮现桶混在一起，让 AI 自然集成成"context"。
+        # 不参与权重排序，偏向较老的、最近没动过的桶。
+        BRAIN_WAVE_PROB = 0.35
+        if random.random() < BRAIN_WAVE_PROB:
+            try:
+                already_surfaced_ids = {b["id"] for b in candidates}
+                wave_pool = [
+                    b for b in unresolved
+                    if b["id"] not in already_surfaced_ids
+                    and not b["metadata"].get("pinned")
+                    and not b["metadata"].get("protected")
+                    and b["metadata"].get("type") not in ("feel", "permanent")
+                ]
+                if wave_pool:
+                    # Ascending by last_active = oldest first
+                    wave_pool.sort(
+                        key=lambda b: b["metadata"].get("last_active", b["metadata"].get("created", ""))
+                    )
+                    # 偏向老的：从最老的 70% 里随机抽，避开"最近刚动过的"
+                    cutoff = max(1, int(len(wave_pool) * 0.7))
+                    wave = random.choice(wave_pool[:cutoff])
+                    clean_meta = {k: v for k, v in wave["metadata"].items() if k != "tags"}
+                    wave_summary = await dehydrator.dehydrate(
+                        strip_wikilinks(wave["content"]), clean_meta
+                    )
+                    score = decay_engine.calculate_score(wave["metadata"])
+                    wave_line = f"[权重:{score:.2f}] [bucket_id:{wave['id']}] {wave_summary}"
+                    # 随机插入位置，不要永远在末尾，让它看起来像自然冒出来的
+                    if dynamic_results:
+                        insert_at = random.randint(0, len(dynamic_results))
+                        dynamic_results.insert(insert_at, wave_line)
+                    else:
+                        dynamic_results.append(wave_line)
+                    logger.info(
+                        f"Brain wave surfaced: {wave['id']} "
+                        f"({wave['metadata'].get('name', 'unnamed')})"
+                    )
+            except Exception as e:
+                logger.warning(f"Brain wave failed / 念头浮现失败: {e}")
+
         if not pinned_results and not dynamic_results:
             return "权重池平静，没有需要处理的记忆。"
 
