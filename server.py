@@ -467,6 +467,76 @@ async def api_recall(request):
 
 
 # =============================================================
+# /api/remember endpoint — REST wrapper around bucket creation
+# 给非 MCP 客户端（TG bot 通过 <memory> tag 提取后用）入桶
+# POST JSON: {content, importance?, valence?, arousal?, tags?, domain?}
+#   tags / domain 都是逗号分隔字符串
+# Returns: {"id": "bucket_id"}
+# =============================================================
+@mcp.custom_route("/api/remember", methods=["POST"])
+async def api_remember(request):
+    from starlette.responses import JSONResponse
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "json body must be an object"}, status_code=400)
+    content = str(body.get("content") or "").strip()
+    if not content:
+        return JSONResponse({"error": "empty content"}, status_code=400)
+    if len(content) > 5000:
+        content = content[:5000]
+    # importance: 1-10
+    try:
+        importance = int(body.get("importance") or 5)
+    except (TypeError, ValueError):
+        importance = 5
+    importance = max(1, min(10, importance))
+    # valence/arousal: 0-1
+    def _clamp01(x, default):
+        try:
+            v = float(x)
+            if 0 <= v <= 1:
+                return v
+        except (TypeError, ValueError):
+            pass
+        return default
+    valence = _clamp01(body.get("valence"), 0.5)
+    arousal = _clamp01(body.get("arousal"), 0.3)
+    # tags: comma-separated
+    tags_raw = body.get("tags", "")
+    tags = []
+    if isinstance(tags_raw, str):
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+    elif isinstance(tags_raw, list):
+        tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+    # domain: comma-separated
+    domain_raw = body.get("domain", "")
+    domain = None
+    if isinstance(domain_raw, str) and domain_raw.strip():
+        domain = [d.strip() for d in domain_raw.split(",") if d.strip()]
+    try:
+        bucket_id = await bucket_mgr.create(
+            content=content,
+            tags=tags,
+            importance=importance,
+            domain=domain,
+            valence=valence,
+            arousal=arousal,
+        )
+        # 后台跑 embedding（如果配置了的话），不阻塞返回
+        try:
+            await embedding_engine.generate_and_store(bucket_id, content)
+        except Exception:
+            pass
+        return JSONResponse({"id": bucket_id})
+    except Exception as e:
+        logger.warning(f"/api/remember failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================
 # /dream-hook endpoint: Dedicated hook for Dreaming
 # Dreaming 专用挂载点
 # =============================================================
