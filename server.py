@@ -1644,6 +1644,10 @@ async def api_network(request):
                 "valence": meta.get("valence", 0.5),
                 "arousal": meta.get("arousal", 0.3),
                 "score": decay_engine.calculate_score(meta),
+                "importance": meta.get("importance", 5),
+                "created": meta.get("created", ""),
+                # 前 80 字摘要：tooltip fallback——当 name 是 hash 占位符时显示
+                "snippet": (b.get("content") or "")[:80],
                 "resolved": meta.get("resolved", False),
                 "pinned": meta.get("pinned", False),
                 "digested": meta.get("digested", False),

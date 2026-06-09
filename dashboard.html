@@ -481,6 +481,13 @@
     width: 9px; height: 9px; border-radius: 50%; display: inline-block;
     transition: filter .2s;
   }
+  .legend-count {
+    margin-left: 2px;
+    font-weight: 500;
+    color: var(--text-light);
+    font-variant-numeric: tabular-nums;
+  }
+  .legend-item.active .legend-count { color: var(--warning); }
 
   #network-svg-wrap {
     position: relative;
@@ -781,10 +788,10 @@
     </div>
     <label class="filter-chip"><input type="checkbox" id="net-show-all"> 显示全部</label>
     <div class="network-legend" id="network-type-filter">
-      <button class="legend-item active" data-type="permanent"><span class="legend-dot" style="background:#9A7B4F"></span>核心</button>
-      <button class="legend-item active" data-type="feel"><span class="legend-dot" style="background:#8B6A6A"></span>情绪</button>
-      <button class="legend-item active" data-type="dynamic"><span class="legend-dot" style="background:#2F4F4F"></span>日常</button>
-      <button class="legend-item" data-type="archived"><span class="legend-dot" style="background:#B0A590"></span>沉睡</button>
+      <button class="legend-item active" data-type="permanent"><span class="legend-dot" style="background:#9A7B4F"></span>核心<span class="legend-count"></span></button>
+      <button class="legend-item active" data-type="feel"><span class="legend-dot" style="background:#8B6A6A"></span>情绪<span class="legend-count"></span></button>
+      <button class="legend-item active" data-type="dynamic"><span class="legend-dot" style="background:#2F4F4F"></span>日常<span class="legend-count"></span></button>
+      <button class="legend-item" data-type="archived"><span class="legend-dot" style="background:#B0A590"></span>沉睡<span class="legend-count"></span></button>
     </div>
   </div>
   <div id="network-svg-wrap">
@@ -1457,6 +1464,16 @@ var CLUSTER_LABELS = {
   archived:  '沉睡',
 };
 
+// 桶的展示名：name 是 hash 占位符时降级显示 snippet（首字摘要）
+function bucketDisplayName(n) {
+  var nm = (n.name || '').trim();
+  var isHash = /^[0-9a-f]{8,16}$/i.test(nm);
+  if (!isHash && nm) return nm;
+  var snip = (n.snippet || '').replace(/\s+/g, ' ').trim();
+  if (snip) return snip.length > 18 ? snip.slice(0, 18) + '…' : snip;
+  return '未命名 · ' + nm.slice(0, 6);
+}
+
 async function loadNetwork() {
   var svg = document.getElementById('network-svg');
   var depth = document.getElementById('network-depth');
@@ -1519,6 +1536,18 @@ function renderNetwork() {
   depth.textContent = hiddenCount > 0
     ? '— ' + hiddenCount + ' 颗在井底 —'
     : '— 共 ' + allNodes.length + ' 颗 —';
+
+  // 更新 legend 上每种类型的总数（始终显示总数，不随 toggle 变）
+  var typeCounts = { permanent: 0, feel: 0, dynamic: 0, archived: 0 };
+  allNodes.forEach(function(n) {
+    var t = n.type || 'dynamic';
+    if (typeCounts[t] !== undefined) typeCounts[t]++;
+  });
+  document.querySelectorAll('#network-type-filter .legend-item').forEach(function(btn) {
+    var t = btn.dataset.type;
+    var span = btn.querySelector('.legend-count');
+    if (span) span.textContent = typeCounts[t] || 0;
+  });
 
   // 算 positions
   var clusters;
@@ -1648,20 +1677,7 @@ function drawNetworkSvg(svg, nodes, edges, positions, clusters) {
     return;
   }
 
-  // 簇标签（只在分类模式画）
-  if (clusters && clusters.clusters) {
-    clusters.clusters.forEach(function(c) {
-      var label = document.createElementNS(NS, 'text');
-      label.setAttribute('x', c.cx);
-      label.setAttribute('y', c.cy);
-      label.setAttribute('text-anchor', 'middle');
-      label.setAttribute('class', 'network-cluster-label');
-      label.setAttribute('fill', c.color);
-      label.setAttribute('fill-opacity', '0.65');
-      label.textContent = c.label + ' · ' + c.count;
-      clustersG.appendChild(label);
-    });
-  }
+  // 簇标签已移除——数量统一显示在 legend 上
 
   // 边：只在关系模式画
   if (networkMode === 'force') {
@@ -1712,7 +1728,7 @@ function drawNetworkSvg(svg, nodes, edges, positions, clusters) {
     // hover：tooltip 用屏幕坐标（pan/zoom 后也准）
     g.addEventListener('mouseenter', function() {
       var tt = document.getElementById('network-tooltip');
-      tt.textContent = n.name || (n.id || '').slice(0, 8);
+      tt.textContent = bucketDisplayName(n);
       var bb = g.getBoundingClientRect();
       var wrapRect = document.getElementById('network-svg-wrap').getBoundingClientRect();
       tt.style.left = (bb.left + bb.width / 2 - wrapRect.left) + 'px';
