@@ -27,8 +27,10 @@ RUN pip install --no-cache-dir git+https://github.com/mininicole/Night-Fall.git
 # Copy project files / 复制项目文件
 COPY *.py .
 COPY dashboard.html .
-# 优先用本地 config.yaml（自定义），否则回退到 example
-COPY config.yaml ./config.yaml
+# 用 example 作为 baseline；运行时关键参数（model / base_url / API key）
+# 全靠 fly env vars 覆盖（dehydration / embedding / Night-Fall）。
+# 本地 config.yaml 在 .gitignore 里，CI 拉不到——所以直接用 example。
+COPY config.example.yaml ./config.yaml
 
 # Persistent mount point: bucket data
 # (Night-Fall stores dreams under $OMBRE_BUCKETS_DIR/night_fall automatically)
