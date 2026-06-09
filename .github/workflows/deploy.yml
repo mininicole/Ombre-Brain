@@ -1,0 +1,34 @@
+name: Deploy to Fly
+
+# Push to main → auto fly deploy。
+# 注意：Night-Fall 代码改动不在这里 cover——它走 Dockerfile 里的 pip install
+# from GitHub，如果改了 Night-Fall fork 需要手动 fly deploy --no-cache。
+# 这里只 cover ombre-brain 自己仓库内的改动。
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.py'
+      - 'Dockerfile'
+      - 'fly.toml'
+      - 'config.yaml'
+      - 'requirements.txt'
+      - 'dashboard.html'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-ombre-brain
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy to Fly
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
