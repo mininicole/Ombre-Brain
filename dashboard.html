@@ -481,6 +481,20 @@
     width: 9px; height: 9px; border-radius: 50%; display: inline-block;
     transition: filter .2s;
   }
+  .net-search {
+    padding: 6px 14px;
+    font: 400 12px Inter, sans-serif;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    outline: none;
+    width: 150px;
+    transition: all .2s;
+  }
+  .net-search:focus { border-color: var(--border-strong); width: 200px; }
+  .net-search::placeholder { color: var(--text-light); }
+
   .legend-count {
     margin-left: 2px;
     font-weight: 500;
@@ -787,6 +801,7 @@
       <button class="mode-btn" data-mode="force">按关系</button>
     </div>
     <label class="filter-chip"><input type="checkbox" id="net-show-all"> 显示全部</label>
+    <input type="text" id="net-search" class="net-search" placeholder="搜索桶…" />
     <div class="network-legend" id="network-type-filter">
       <button class="legend-item active" data-type="permanent"><span class="legend-dot" style="background:#9A7B4F"></span>核心<span class="legend-count"></span></button>
       <button class="legend-item active" data-type="feel"><span class="legend-dot" style="background:#8B6A6A"></span>情绪<span class="legend-count"></span></button>
@@ -1449,6 +1464,7 @@ var networkMode = 'cluster';        // 'cluster' | 'force'
 var networkShowAll = false;
 // type 过滤：每个 type 一个开关，archived 默认关
 var networkActiveTypes = { permanent: true, feel: true, dynamic: true, archived: false };
+var networkSearchQuery = '';
 var networkToolbarBound = false;
 
 var NET_COLORS = {
@@ -1492,12 +1508,28 @@ async function loadNetwork() {
   renderNetwork();
 }
 
+// 关键词匹配：name / 内容摘要 / domain / id 前缀，大小写不敏感
+function bucketMatchesQuery(n, q) {
+  var hay = [
+    n.name || '',
+    n.snippet || '',
+    (n.domain || []).join(','),
+    n.id || '',
+  ].join('\n').toLowerCase();
+  return hay.indexOf(q) >= 0;
+}
+
 function selectVisibleNodes(allNodes) {
   // 先按 type 开关过滤
   var typeFiltered = allNodes.filter(function(n) {
     var t = n.type || 'dynamic';
     return networkActiveTypes[t] !== false;
   });
+  // 搜索时：全井搜（无视精华规则），井底的也捞上来
+  if (networkSearchQuery) {
+    var q = networkSearchQuery.toLowerCase();
+    return typeFiltered.filter(function(n) { return bucketMatchesQuery(n, q); });
+  }
   if (networkShowAll) return typeFiltered;
   // 精华规则：从已过 type 过滤的桶里再筛
   var THIRTY_DAYS = 30 * 24 * 3600 * 1000;
@@ -1530,12 +1562,16 @@ function renderNetwork() {
     return visibleIds[e.source] && visibleIds[e.target];
   });
 
-  // 角标：井底剩多少
+  // 角标：搜索时显示命中数；平时显示井底剩多少
   var hiddenCount = allNodes.length - visibleNodes.length;
   var depth = document.getElementById('network-depth');
-  depth.textContent = hiddenCount > 0
-    ? '— ' + hiddenCount + ' 颗在井底 —'
-    : '— 共 ' + allNodes.length + ' 颗 —';
+  if (networkSearchQuery) {
+    depth.textContent = '— 命中 ' + visibleNodes.length + ' 颗 —';
+  } else {
+    depth.textContent = hiddenCount > 0
+      ? '— ' + hiddenCount + ' 颗在井底 —'
+      : '— 共 ' + allNodes.length + ' 颗 —';
+  }
 
   // 更新 legend 上每种类型的总数（始终显示总数，不随 toggle 变）
   var typeCounts = { permanent: 0, feel: 0, dynamic: 0, archived: 0 };
@@ -1835,6 +1871,17 @@ function bindNetworkToolbar() {
   if (allChk) allChk.addEventListener('change', function() {
     networkShowAll = allChk.checked;
     if (networkData) renderNetwork();
+  });
+
+  // 搜索：300ms 防抖，搜索时全井捞（无视精华规则）
+  var netSearch = document.getElementById('net-search');
+  var netSearchTimer;
+  if (netSearch) netSearch.addEventListener('input', function() {
+    clearTimeout(netSearchTimer);
+    netSearchTimer = setTimeout(function() {
+      networkSearchQuery = netSearch.value.trim();
+      if (networkData) renderNetwork();
+    }, 300);
   });
 
   // pan/zoom
