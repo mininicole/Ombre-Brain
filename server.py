@@ -2843,6 +2843,64 @@ async def api_todos(request):
     return JSONResponse({"items": data["items"], "suggestions": suggestions})
 
 
+# --- Dirty Talk 黑话收藏：他在各个端口说过的好玩的话，手动收藏 ---
+_QUOTES_PATH = os.path.join(
+    os.environ.get("OMBRE_BUCKETS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets")),
+    "quotes.json",
+)
+_quotes_lock = asyncio.Lock()
+
+
+def _quotes_load():
+    try:
+        with open(_QUOTES_PATH, "r", encoding="utf-8") as f:
+            return _json_lib.load(f)
+    except Exception:
+        return []
+
+
+def _quotes_save(quotes):
+    os.makedirs(os.path.dirname(_QUOTES_PATH), exist_ok=True)
+    tmp = _QUOTES_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json_lib.dump(quotes, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _QUOTES_PATH)
+
+
+@mcp.custom_route("/api/quotes", methods=["GET", "POST"])
+async def api_quotes(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        op = body.get("op", "add")
+        async with _quotes_lock:
+            quotes = _quotes_load()
+            if op == "add":
+                text = (body.get("text") or "").strip()
+                if not text:
+                    return JSONResponse({"error": "空的"}, status_code=400)
+                quotes.insert(0, {
+                    "id": secrets.token_hex(6),
+                    "text": text[:1000],
+                    "source": (body.get("source") or "tg")[:10],
+                    "created": _cn_now().isoformat(),
+                })
+            elif op == "remove":
+                quotes = [q for q in quotes if q["id"] != body.get("id")]
+            else:
+                return JSONResponse({"error": "未知操作"}, status_code=400)
+            _quotes_save(quotes)
+        return JSONResponse({"ok": True})
+    async with _quotes_lock:
+        quotes = _quotes_load()
+    return JSONResponse({"quotes": quotes})
+
+
 # --- Playroll：tag 骰子文字板（从 Cloudflare Worker 移植）---
 _PLAY_SYSTEM = """你是中文成人文学写手。根据用户给的 tag 组合写一段身体感强的连贯描写。
 
