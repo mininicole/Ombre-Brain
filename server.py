@@ -2457,6 +2457,16 @@ async def api_musings(request):
             )
             r.raise_for_status()
             content = r.json().get("files", {}).get("state.json", {}).get("content", "{}")
+        # CC 端今日互动数：本机 Stop hook 写进同一个 gist 的 cc_stats.json
+        cc_count = 0
+        try:
+            cc_raw = r.json().get("files", {}).get("cc_stats.json", {}).get("content", "")
+            if cc_raw:
+                cc = _json_lib.loads(cc_raw)
+                if cc.get("date") == _cn_now().strftime("%Y-%m-%d"):
+                    cc_count = int(cc.get("count", 0))
+        except Exception:
+            pass
         state = _json_lib.loads(content)
         musings = [
             {
@@ -2481,7 +2491,9 @@ async def api_musings(request):
         data = {
             "bio": state.get("last_bio", ""),
             "musings": musings,
-            "today_interactions": today_interactions,
+            "today_interactions": today_interactions + cc_count,
+            "today_tg": today_interactions,
+            "today_cc": cc_count,
         }
         _musings_cache["ts"] = time.time()
         _musings_cache["data"] = data
