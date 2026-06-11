@@ -65,6 +65,45 @@
   .b-diary { grid-column: 2; grid-row: 1; min-height: 150px; display: flex; flex-direction: column; }
   .b-days  { grid-column: 2; grid-row: 2; }
   .b-murmurs { grid-column: 1 / 3; grid-row: 3; }
+  .b-todo { grid-column: 1 / 3; grid-row: 4; }
+
+  /* todo */
+  .todo-add { display: flex; gap: 10px; margin: 10px 0 14px; }
+  .todo-add input {
+    flex: 1; padding: 9px 13px; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--tile); font-family: var(--serif); font-size: 13px; color: var(--ink); outline: none;
+  }
+  .todo-add input:focus { border-color: var(--clay); }
+  .todo-add button {
+    padding: 9px 18px; border: none; border-radius: 12px; background: var(--ink);
+    color: var(--paper); font-family: var(--serif); font-size: 13px; letter-spacing: 0.1em; cursor: pointer;
+  }
+  .todo-add button:hover { background: var(--clay); }
+  .todo-item { display: flex; align-items: baseline; gap: 11px; padding: 8px 2px; border-bottom: 1px solid var(--line); }
+  .todo-item:last-child { border-bottom: none; }
+  .todo-box {
+    width: 15px; height: 15px; flex: none; align-self: center;
+    border: 1.5px solid var(--ink-soft); border-radius: 4px; cursor: pointer; position: relative;
+  }
+  .todo-item.done .todo-box { border-color: var(--clay); background: var(--clay); }
+  .todo-item.done .todo-box::after {
+    content: '✓'; position: absolute; inset: 0; color: var(--paper);
+    font-size: 11px; line-height: 13px; text-align: center;
+  }
+  .todo-text { flex: 1; font-size: 13.5px; line-height: 1.7; word-break: break-word; }
+  .todo-item.done .todo-text { color: var(--ink-faint); text-decoration: line-through; }
+  .todo-del { background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 15px; padding: 0 4px; }
+  .todo-del:hover { color: var(--clay); }
+
+  .sug-head { font-size: 11px; color: var(--ink-faint); letter-spacing: 0.16em; margin: 16px 0 6px; }
+  .sug { display: flex; align-items: baseline; gap: 9px; padding: 7px 2px; }
+  .sug .todo-text { color: var(--ink-soft); font-style: italic; }
+  .sug .from { font-size: 10.5px; color: var(--ink-faint); white-space: nowrap; }
+  .sug button {
+    background: none; border: 1px solid var(--line); border-radius: 9px; cursor: pointer;
+    font-family: var(--cjk); font-size: 11px; color: var(--ink-soft); padding: 3px 9px; white-space: nowrap;
+  }
+  .sug button:hover { border-color: var(--clay); color: var(--clay); }
 
   .b-label {
     font-family: var(--display); font-weight: 600;
@@ -267,6 +306,16 @@
       </div>
       <div id="musings"><div class="empty">正在听……</div></div>
     </div>
+
+    <div class="b-card b-todo">
+      <div class="b-label">Todo<span class="zh">待办</span></div>
+      <div class="todo-add">
+        <input type="text" id="todo-input" placeholder="记一件要做的事" onkeydown="if(event.key==='Enter')addTodo()">
+        <button onclick="addTodo()">记下</button>
+      </div>
+      <div id="todo-list"><div class="empty">……</div></div>
+      <div id="todo-sugs"></div>
+    </div>
   </div>
 </div>
 
@@ -465,7 +514,65 @@ async function doLogout() {
 
 function showAuth() { document.getElementById('auth-overlay').style.display = 'flex'; }
 
-function loadAll() { loadBuckets(); loadMusings(); loadDream(); }
+async function loadTodos() {
+  const list = document.getElementById('todo-list');
+  const sugs = document.getElementById('todo-sugs');
+  try {
+    const r = await authFetch('/api/todos');
+    if (!r) return;
+    const data = await r.json();
+    const items = data.items || [];
+    if (!items.length) {
+      list.innerHTML = '<div class="empty">还没有待办。两个人都闲着，多好。</div>';
+    } else {
+      const undone = items.filter(i => !i.done);
+      const done = items.filter(i => i.done).slice(0, 5);
+      list.innerHTML = [...undone, ...done].map(i => `
+        <div class="todo-item ${i.done ? 'done' : ''}">
+          <span class="todo-box" onclick="toggleTodo('${i.id}')"></span>
+          <span class="todo-text">${esc(i.text)}</span>
+          <button class="todo-del" onclick="removeTodo('${i.id}')" title="删除">×</button>
+        </div>`).join('');
+    }
+    if (data.suggestions && data.suggestions.length) {
+      sugs.innerHTML = '<div class="sug-head">记忆里翻出来的——</div>' + data.suggestions.map(s => `
+        <div class="sug">
+          <span class="todo-text">${esc(s.text)}</span>
+          <span class="from">${esc(s.from)}</span>
+          <button onclick="adoptSug('${s.key}', this)">收</button>
+          <button onclick="dismissSug('${s.key}')">扔</button>
+        </div>`).join('');
+      window._sugTexts = Object.fromEntries(data.suggestions.map(s => [s.key, s.text]));
+    } else {
+      sugs.innerHTML = '';
+    }
+  } catch {
+    list.innerHTML = '<div class="empty">清单卡住了，刷新试试。</div>';
+  }
+}
+
+async function todoOp(body) {
+  const r = await fetch('/api/todos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (r.status === 401) { showAuth(); return false; }
+  return r.ok;
+}
+
+async function addTodo() {
+  const input = document.getElementById('todo-input');
+  const text = input.value.trim();
+  if (!text) return;
+  if (await todoOp({ op: 'add', text })) { input.value = ''; loadTodos(); }
+}
+async function toggleTodo(id) { if (await todoOp({ op: 'toggle', id })) loadTodos(); }
+async function removeTodo(id) { if (await todoOp({ op: 'remove', id })) loadTodos(); }
+async function adoptSug(key) {
+  const text = (window._sugTexts || {})[key];
+  if (!text) return;
+  if (await todoOp({ op: 'add', text, src_key: key })) loadTodos();
+}
+async function dismissSug(key) { if (await todoOp({ op: 'dismiss', key })) loadTodos(); }
+
+function loadAll() { loadBuckets(); loadMusings(); loadDream(); loadTodos(); }
 
 async function doLogin() {
   const pwd = document.getElementById('auth-pwd').value;

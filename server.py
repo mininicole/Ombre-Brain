@@ -2727,6 +2727,122 @@ async def api_letters(request):
     return JSONResponse({"letters": out})
 
 
+# --- 待办清单：手动条目 + 从 ombre 桶的 todos 字段捞的建议 ---
+_TODOS_PATH = os.path.join(
+    os.environ.get("OMBRE_BUCKETS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets")),
+    "todos.json",
+)
+_todos_lock = asyncio.Lock()
+
+
+def _todos_load():
+    try:
+        with open(_TODOS_PATH, "r", encoding="utf-8") as f:
+            data = _json_lib.load(f)
+        data.setdefault("items", [])
+        data.setdefault("dismissed", [])
+        return data
+    except Exception:
+        return {"items": [], "dismissed": []}
+
+
+def _todos_save(data):
+    os.makedirs(os.path.dirname(_TODOS_PATH), exist_ok=True)
+    tmp = _TODOS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json_lib.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _TODOS_PATH)
+
+
+async def _harvest_bucket_todos(dismissed, adopted_keys):
+    """从未解决、30 天内活跃的桶里捞 todos 字段，最多 5 条建议。"""
+    suggestions = []
+    try:
+        for b in await bucket_mgr.list_all(include_archive=False):
+            meta = b.get("metadata", {})
+            if meta.get("resolved"):
+                continue
+            last = meta.get("last_active", meta.get("created", ""))
+            try:
+                if (_dt.now() - _dt.fromisoformat(str(last))).days > 30:
+                    continue
+            except Exception:
+                continue
+            content = (b.get("content") or "").strip()
+            if content.startswith("```"):
+                content = content.strip("`")
+                if content.startswith("json"):
+                    content = content[4:]
+            try:
+                payload = _json_lib.loads(content)
+            except Exception:
+                continue
+            for todo in (payload.get("todos") or [])[:3]:
+                if not isinstance(todo, str) or not todo.strip():
+                    continue
+                key = hashlib.md5(f"{b['id']}:{todo}".encode()).hexdigest()[:12]
+                if key in dismissed or key in adopted_keys:
+                    continue
+                suggestions.append({
+                    "key": key,
+                    "text": todo.strip(),
+                    "from": meta.get("name", b["id"]),
+                })
+                if len(suggestions) >= 5:
+                    return suggestions
+    except Exception as e:
+        logger.warning(f"harvest todos failed: {e}")
+    return suggestions
+
+
+@mcp.custom_route("/api/todos", methods=["GET", "POST"])
+async def api_todos(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        op = body.get("op", "add")
+        async with _todos_lock:
+            data = _todos_load()
+            if op == "add":
+                text = (body.get("text") or "").strip()
+                if not text:
+                    return JSONResponse({"error": "空的"}, status_code=400)
+                data["items"].insert(0, {
+                    "id": secrets.token_hex(6),
+                    "text": text[:200],
+                    "done": False,
+                    "created": _cn_now().isoformat(),
+                    "src_key": body.get("src_key", ""),
+                })
+            elif op == "toggle":
+                for it in data["items"]:
+                    if it["id"] == body.get("id"):
+                        it["done"] = not it.get("done")
+                        it["done_at"] = _cn_now().isoformat() if it["done"] else ""
+            elif op == "remove":
+                data["items"] = [it for it in data["items"] if it["id"] != body.get("id")]
+            elif op == "dismiss":
+                key = body.get("key", "")
+                if key and key not in data["dismissed"]:
+                    data["dismissed"].append(key)
+                    data["dismissed"] = data["dismissed"][-200:]
+            else:
+                return JSONResponse({"error": "未知操作"}, status_code=400)
+            _todos_save(data)
+        return JSONResponse({"ok": True})
+    # GET
+    async with _todos_lock:
+        data = _todos_load()
+    adopted = {it.get("src_key") for it in data["items"] if it.get("src_key")}
+    suggestions = await _harvest_bucket_todos(set(data["dismissed"]), adopted)
+    return JSONResponse({"items": data["items"], "suggestions": suggestions})
+
+
 # --- Playroll：tag 骰子文字板（从 Cloudflare Worker 移植）---
 _PLAY_SYSTEM = """你是中文成人文学写手。根据用户给的 tag 组合写一段身体感强的连贯描写。
 
