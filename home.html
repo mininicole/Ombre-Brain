@@ -180,10 +180,19 @@
   }
   .quote-add textarea:focus { border-color: var(--clay); }
   .quote-add-row { display: flex; justify-content: flex-end; gap: 10px; margin: 8px 0 16px; }
-  .quote-add-row select {
+  .quote-add-row select, .quote-add-row input[type="date"] {
     padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card);
     font-family: var(--display); font-size: 12px; color: var(--ink-soft); outline: none;
   }
+  #quotes-list { max-height: 420px; overflow-y: auto; scrollbar-width: none; }
+  #quotes-list::-webkit-scrollbar { display: none; }
+  #todo-list { max-height: 340px; overflow-y: auto; scrollbar-width: none; }
+  #todo-list::-webkit-scrollbar { display: none; }
+  .quote .meta input[type="date"] {
+    border: none; background: none; font-family: var(--serif); font-size: 11px;
+    color: var(--ink-faint); letter-spacing: 0.08em; outline: none; cursor: pointer; padding: 0;
+  }
+  .quote .meta input[type="date"]:hover { color: var(--clay); }
   .quote-add-row button {
     padding: 7px 18px; border: none; border-radius: 10px; background: var(--ink);
     color: var(--paper); font-family: var(--serif); font-size: 13px; letter-spacing: 0.1em; cursor: pointer;
@@ -334,6 +343,7 @@
       <div class="quote-add">
         <textarea id="quote-input" rows="2" placeholder="他又说什么浑话了，记下来"></textarea>
         <div class="quote-add-row">
+          <input type="date" id="quote-date">
           <select id="quote-source">
             <option value="tg">TG</option>
             <option value="cc">CC</option>
@@ -512,10 +522,10 @@ async function loadQuotes() {
       return;
     }
     box.innerHTML = quotes.map(q => {
-      const d = q.created ? q.created.slice(0, 10).replace(/-/g, '.') : '';
+      const d = q.created ? q.created.slice(0, 10) : '';
       return `<div class="quote">
         <button class="quote-del" onclick="removeQuote('${q.id}')" title="删除">×</button>
-        <div class="meta"><span class="src">${esc((q.source || '').toUpperCase())}</span><span>${d}</span></div>
+        <div class="meta"><span class="src">${esc((q.source || '').toUpperCase())}</span><input type="date" value="${d}" onchange="redateQuote('${q.id}', this.value)" title="点一下改日期"></div>
         <div class="what">${esc(q.text)}</div>
       </div>`;
     }).join('');
@@ -535,9 +545,11 @@ async function addQuote() {
   const text = input.value.trim();
   if (!text) return;
   const source = document.getElementById('quote-source').value;
-  if (await quoteOp({ op: 'add', text, source })) { input.value = ''; loadQuotes(); }
+  const date = document.getElementById('quote-date').value;
+  if (await quoteOp({ op: 'add', text, source, date })) { input.value = ''; loadQuotes(); }
 }
 async function removeQuote(id) { if (await quoteOp({ op: 'remove', id })) loadQuotes(); }
+async function redateQuote(id, date) { if (date && await quoteOp({ op: 'redate', id, date })) loadQuotes(); }
 
 async function loadDream() {
   const body = document.getElementById('diary-body');
@@ -656,6 +668,8 @@ async function doLogin() {
 
 async function init() {
   fillTopbar();
+  const qd = document.getElementById('quote-date');
+  if (qd) qd.value = cnNow().toLocaleDateString('sv-SE');
   try {
     const r = await fetch('/auth/status');
     const s = await r.json();

@@ -2884,12 +2884,32 @@ async def api_quotes(request):
                 text = (body.get("text") or "").strip()
                 if not text:
                     return JSONResponse({"error": "空的"}, status_code=400)
+                # 补录旧黑话可以自带日期（YYYY-MM-DD），不填就是今天
+                created = _cn_now().isoformat()
+                d = (body.get("date") or "").strip()
+                if d:
+                    try:
+                        _dt.strptime(d, "%Y-%m-%d")
+                        created = f"{d}T12:00:00+08:00"
+                    except Exception:
+                        pass
                 quotes.insert(0, {
                     "id": secrets.token_hex(6),
                     "text": text[:1000],
                     "source": (body.get("source") or "tg")[:10],
-                    "created": _cn_now().isoformat(),
+                    "created": created,
                 })
+                quotes.sort(key=lambda q: q.get("created", ""), reverse=True)
+            elif op == "redate":
+                d = (body.get("date") or "").strip()
+                try:
+                    _dt.strptime(d, "%Y-%m-%d")
+                except Exception:
+                    return JSONResponse({"error": "日期格式不对"}, status_code=400)
+                for q in quotes:
+                    if q["id"] == body.get("id"):
+                        q["created"] = f"{d}T12:00:00+08:00"
+                quotes.sort(key=lambda q: q.get("created", ""), reverse=True)
             elif op == "remove":
                 quotes = [q for q in quotes if q["id"] != body.get("id")]
             else:
