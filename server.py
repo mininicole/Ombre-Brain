@@ -2466,13 +2466,66 @@ async def api_musings(request):
             for m in state.get("trigger_history", [])[-12:]
         ]
         musings.reverse()
-        data = {"bio": state.get("last_bio", ""), "musings": musings}
+        # 今日互动：tg_history_evan 里今天（东八区）的消息条数，两个人的都算
+        today_interactions = 0
+        try:
+            today_str = _cn_now().strftime("%Y-%m-%d")
+            for e in state.get("tg_history_evan", []) or []:
+                ts = e.get("ts")
+                if ts:
+                    d = _dt.fromtimestamp(ts / 1000, tz=_CN_TZ) if _CN_TZ else _dt.fromtimestamp(ts / 1000)
+                    if d.strftime("%Y-%m-%d") == today_str:
+                        today_interactions += 1
+        except Exception:
+            pass
+        data = {
+            "bio": state.get("last_bio", ""),
+            "musings": musings,
+            "today_interactions": today_interactions,
+        }
         _musings_cache["ts"] = time.time()
         _musings_cache["data"] = data
         return JSONResponse(data)
     except Exception as e:
         logger.warning(f"/api/musings failed: {e}")
         return JSONResponse({"bio": "", "musings": [], "error": str(e)}, status_code=500)
+
+
+# --- 最新的梦（Night-Fall 的 dream_*.md，给首页 Diary 卡）---
+@mcp.custom_route("/api/latest-dream", methods=["GET"])
+async def api_latest_dream(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        dreams_dir = os.path.join(
+            os.environ.get("OMBRE_BUCKETS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets")),
+            "night_fall", "dreams",
+        )
+        if not os.path.isdir(dreams_dir):
+            return JSONResponse({"dream": None})
+        files = [os.path.join(dreams_dir, f) for f in os.listdir(dreams_dir)
+                 if f.startswith("dream_") and f.endswith(".md")]
+        if not files:
+            return JSONResponse({"dream": None})
+        latest = max(files, key=os.path.getmtime)
+        with open(latest, "r", encoding="utf-8") as f:
+            text = f.read()
+        # 拆 YAML frontmatter：--- 头 --- 正文
+        generated_at = ""
+        body = text
+        if text.startswith("---"):
+            parts = text.split("---", 2)
+            if len(parts) >= 3:
+                body = parts[2].strip()
+                for line in parts[1].splitlines():
+                    if line.strip().startswith("generated_at:"):
+                        generated_at = line.split(":", 1)[1].strip().strip("'\"")
+                        break
+        return JSONResponse({"dream": {"generated_at": generated_at, "body": body}})
+    except Exception as e:
+        logger.warning(f"/api/latest-dream failed: {e}")
+        return JSONResponse({"dream": None, "error": str(e)}, status_code=500)
 
 
 # --- 双向信箱 ---

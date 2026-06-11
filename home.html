@@ -2,18 +2,25 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ombre · 深深与 Evan</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>SHEN² EVAN</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,600;1,500;1,600&family=Caveat:wght@500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --paper: #F0EEE6;
-    --paper-deep: #E8E5DB;
-    --ink: #1F1E1B;
-    --ink-soft: #5E5B53;
-    --ink-faint: #8E8A7E;
-    --clay: #C96442;
-    --rule: rgba(31, 30, 27, 0.14);
-    --serif: ui-serif, Georgia, "Times New Roman", "Songti SC", "Noto Serif SC", "SimSun", serif;
+    --paper: #F4F1E5;
+    --card: #FEFDF8;
+    --tile: #F4F0E2;
+    --ink: #2A2722;
+    --ink-soft: #6B665A;
+    --ink-faint: #9B9588;
+    --clay: #D2674A;
+    --line: rgba(42,39,34,0.10);
+    --display: "Playfair Display", ui-serif, Georgia, serif;
+    --script: "Caveat", cursive;
+    --cjk: "Songti SC", "Noto Serif SC", "SimSun", serif;
+    --serif: ui-serif, Georgia, "Songti SC", "Noto Serif SC", "SimSun", serif;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { background: var(--paper); }
@@ -24,167 +31,341 @@
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
   }
-  .page { max-width: 720px; margin: 0 auto; padding: 0 24px 96px; }
-
-  /* ---- nav ---- */
-  header {
-    display: flex; justify-content: space-between; align-items: baseline;
-    padding: 28px 0 16px; border-bottom: 1px solid var(--rule);
+  .page {
+    max-width: 520px; margin: 0 auto;
+    padding: 0 18px calc(110px + env(safe-area-inset-bottom));
   }
-  .wordmark {
-    font-size: 14px; letter-spacing: 0.22em; text-transform: uppercase;
-    color: var(--ink); font-weight: 600;
+
+  /* ---- top bar ---- */
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 22px 4px 0;
   }
-  .wordmark span { color: var(--clay); }
-  nav { display: flex; gap: 22px; }
-  nav a {
-    font-size: 14px; color: var(--ink-soft); text-decoration: none;
-    letter-spacing: 0.04em; border-bottom: 1px solid transparent; padding-bottom: 2px;
+  .topbar .date {
+    font-family: var(--display);
+    font-size: 15px; letter-spacing: 0.03em; color: var(--ink);
   }
-  nav a:hover { color: var(--ink); border-bottom-color: var(--clay); }
-  nav a.here { color: var(--ink); border-bottom-color: var(--clay); }
+  .topbar .date b { color: var(--clay); font-weight: 500; }
+  .topbar .gear { background: none; border: none; cursor: pointer; color: var(--ink-soft); padding: 6px; display: flex; }
+  .topbar .gear:hover { color: var(--ink); }
 
-  /* ---- hero ---- */
-  .hero { padding: 64px 0 48px; text-align: center; border-bottom: 1px solid var(--rule); }
-  .hero .date { font-size: 15px; color: var(--ink-soft); letter-spacing: 0.12em; }
-  .hero .count {
-    font-size: clamp(64px, 14vw, 110px); line-height: 1.1; margin: 18px 0 10px;
-    font-weight: 500; font-variant-numeric: lining-nums;
+  /* ---- hero lockup ---- */
+  .hero { padding: 54px 0 52px; text-align: center; }
+  .hero .shen {
+    font-family: var(--display); font-weight: 500;
+    font-size: clamp(44px, 13vw, 64px); line-height: 0.9;
+    letter-spacing: 0.02em; text-align: left; padding-left: 13%;
   }
-  .hero .count em { font-style: normal; color: var(--clay); }
-  .hero .since { font-size: 14px; color: var(--ink-faint); letter-spacing: 0.06em; }
-
-  /* ---- sections ---- */
-  section { padding: 44px 0 8px; }
-  h2 {
-    font-size: 13px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase;
-    color: var(--clay); margin-bottom: 22px;
+  .hero .shen sup { font-size: 0.52em; vertical-align: super; font-weight: 600; }
+  .hero .evan {
+    font-family: var(--display); font-weight: 500;
+    font-size: clamp(92px, 27vw, 134px); line-height: 0.92;
+    letter-spacing: 0.01em; position: relative; display: inline-block;
   }
-  h2 .zh { color: var(--ink); margin-left: 10px; letter-spacing: 0.3em; }
-
-  .card {
-    border: 1px solid var(--rule); border-radius: 4px; background: rgba(255,255,255,0.45);
-    padding: 18px 20px; margin-bottom: 14px;
+  .hero .aiim {
+    position: absolute; right: -0.3em; bottom: -0.34em;
+    font-family: var(--script); font-size: 26px; color: var(--clay);
+    transform: rotate(-4deg); white-space: nowrap;
   }
-  .card .meta { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.08em; margin-bottom: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
-  .card .meta .pin { color: var(--clay); }
-  .card .body { font-size: 15px; line-height: 1.85; color: var(--ink); word-break: break-word; }
-  .card .name { font-weight: 600; margin-bottom: 6px; font-size: 15px; }
+  .hero .aiim .bubbles { font-size: 14px; vertical-align: super; letter-spacing: 2px; }
 
-  .musing { border-left: 2px solid var(--rule); padding: 4px 0 4px 18px; margin-bottom: 20px; }
-  .musing:hover { border-left-color: var(--clay); }
-  .musing .when { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.08em; margin-bottom: 5px; }
-  .musing .what { font-size: 15px; line-height: 1.85; }
-
-  .bio-line {
-    font-size: 15px; color: var(--ink-soft); font-style: italic;
-    padding: 14px 20px; border: 1px dashed var(--rule); border-radius: 4px; margin-bottom: 26px;
+  /* ---- bento ---- */
+  .bento { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .b-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 22px;
+    padding: 18px 16px; position: relative; overflow: hidden;
   }
-  .bio-line b { color: var(--clay); font-style: normal; font-weight: 600; font-size: 12px; letter-spacing: 0.18em; margin-right: 10px; }
+  .b-today { grid-column: 1; grid-row: 1 / 3; min-height: 480px; }
+  .b-diary { grid-column: 2; grid-row: 1; min-height: 150px; display: flex; flex-direction: column; }
+  .b-days  { grid-column: 2; grid-row: 2; }
+  .b-murmurs { grid-column: 1 / 3; grid-row: 3; }
 
-  .empty { font-size: 14px; color: var(--ink-faint); font-style: italic; padding: 8px 0 16px; }
+  .b-label {
+    font-family: var(--display); font-weight: 600;
+    font-size: 19px; color: var(--clay); margin-bottom: 6px; white-space: nowrap;
+  }
+  .b-label .zh {
+    font-family: var(--cjk); font-weight: 600;
+    font-size: 12px; color: var(--ink); margin-left: 6px; letter-spacing: 0.1em;
+  }
+  .ghost {
+    position: absolute; left: 50%; bottom: -6%; transform: translateX(-46%);
+    font-family: var(--display); font-weight: 500;
+    font-size: 280px; line-height: 0.8; color: rgba(210,103,74,0.06);
+    pointer-events: none; user-select: none;
+  }
 
-  footer { margin-top: 72px; padding-top: 18px; border-top: 1px solid var(--rule);
-    font-size: 12px; color: var(--ink-faint); letter-spacing: 0.14em; text-align: center; }
+  .b-scroll { position: relative; z-index: 1; margin-top: 8px; overflow-y: auto; scrollbar-width: none; }
+  .b-scroll::-webkit-scrollbar { display: none; }
+  .b-today .b-scroll { max-height: 420px; }
+
+  .mem { padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .mem:last-child { border-bottom: none; }
+  .mem .when { font-size: 11px; color: var(--ink-faint); letter-spacing: 0.1em; margin-bottom: 4px; }
+  .mem .when .pin { color: var(--clay); }
+  .mem .name { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+  .mem .preview { font-size: 12.5px; line-height: 1.75; color: var(--ink-soft); word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+
+  /* diary */
+  .diary-body {
+    flex: 1; font-size: 12.5px; line-height: 1.8; color: var(--ink-soft); margin-top: 4px;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+    word-break: break-word;
+  }
+  .diary-more {
+    align-self: flex-end; margin-top: 8px;
+    font-family: ui-monospace, Consolas, monospace; font-size: 12px; letter-spacing: 0.12em;
+    color: var(--ink-faint); cursor: pointer; background: none; border: none;
+  }
+  .diary-more:hover { color: var(--clay); }
+
+  /* days stats */
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .stat {
+    background: var(--tile); border-radius: 14px; padding: 14px 2px 11px; text-align: center;
+  }
+  .stat .num {
+    font-family: var(--display); font-weight: 600; font-size: 26px; color: var(--clay);
+    line-height: 1.1; font-variant-numeric: lining-nums; white-space: nowrap;
+  }
+  .stat .cap {
+    font-family: var(--cjk); font-size: 10.5px; color: var(--ink-soft); margin-top: 5px;
+    letter-spacing: 0.04em; white-space: nowrap;
+  }
+
+  /* murmurs */
+  .now-row {
+    display: flex; gap: 12px; align-items: baseline;
+    border: 1px dashed rgba(42,39,34,0.22); border-radius: 12px;
+    padding: 11px 14px; margin: 10px 0 16px;
+  }
+  .now-row .tag { font-family: var(--cjk); font-size: 12.5px; font-weight: 600; color: var(--clay); letter-spacing: 0.2em; white-space: nowrap; }
+  .now-row .txt { font-size: 13px; line-height: 1.7; word-break: break-word; }
+
+  .mur { border-left: 2px solid var(--clay); padding: 2px 0 2px 13px; margin-bottom: 18px; }
+  .mur:last-child { margin-bottom: 4px; }
+  .mur .when { font-size: 11px; color: var(--ink-faint); letter-spacing: 0.08em; margin-bottom: 3px; }
+  .mur .what { font-size: 13px; line-height: 1.8; word-break: break-word; }
+
+  .empty { font-size: 12.5px; color: var(--ink-faint); font-style: italic; padding: 8px 0; position: relative; z-index: 1; }
+
+  /* ---- dream overlay ---- */
+  #dream-overlay {
+    position: fixed; inset: 0; background: var(--paper); z-index: 70; display: none;
+    overflow-y: auto; padding: 28px 24px calc(40px + env(safe-area-inset-bottom));
+  }
+  #dream-overlay .inner { max-width: 520px; margin: 0 auto; }
+  #dream-overlay h3 { font-family: var(--display); font-style: italic; font-size: 24px; color: var(--clay); }
+  #dream-overlay .gen { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.1em; margin: 8px 0 24px; }
+  #dream-overlay .body { font-size: 14.5px; line-height: 2.1; white-space: pre-wrap; word-break: break-word; }
+  #dream-overlay .close {
+    position: sticky; top: 0; float: right; background: none; border: none;
+    font-family: var(--display); font-size: 26px; color: var(--ink-soft); cursor: pointer; line-height: 1;
+  }
+  #dream-overlay .close:hover { color: var(--clay); }
+
+  /* ---- tab bar ---- */
+  .tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+    background: linear-gradient(to top, var(--paper) 78%, rgba(244,241,229,0));
+    padding: 10px 0 calc(14px + env(safe-area-inset-bottom));
+  }
+  .tabbar .inner {
+    max-width: 520px; margin: 0 auto;
+    display: flex; justify-content: space-around; align-items: flex-end;
+  }
+  .tab { display: flex; flex-direction: column; align-items: center; gap: 5px; text-decoration: none; color: var(--ink); min-width: 64px; }
+  .tab svg { width: 30px; height: 30px; stroke: currentColor; }
+  .tab .t-label { font-family: var(--cjk); font-size: 12px; font-weight: 600; letter-spacing: 0.3em; margin-right: -0.3em; }
+  .tab .t-label.en { font-family: var(--display); letter-spacing: 0.12em; margin-right: 0; }
+  .tab.here { color: var(--clay); }
+  .tab:active { transform: translateY(1px); }
+
+  /* ---- settings sheet ---- */
+  #sheet-mask { position: fixed; inset: 0; background: rgba(42,39,34,0.25); z-index: 60; display: none; }
+  #sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 61; display: none;
+    background: var(--paper); border-radius: 26px 26px 0 0;
+    max-width: 520px; margin: 0 auto;
+    padding: 26px 26px calc(30px + env(safe-area-inset-bottom));
+  }
+  #sheet h3 { font-family: var(--display); font-style: italic; font-size: 18px; color: var(--clay); margin-bottom: 18px; }
+  #sheet button {
+    display: block; width: 100%; padding: 13px; margin-bottom: 12px;
+    border: 1px solid rgba(42,39,34,0.15); border-radius: 14px; background: var(--card);
+    font-family: var(--serif); font-size: 14px; color: var(--ink); cursor: pointer; letter-spacing: 0.08em;
+  }
+  #sheet button:hover { border-color: var(--clay); color: var(--clay); }
 
   /* ---- auth overlay ---- */
-  #auth-overlay {
-    position: fixed; inset: 0; background: var(--paper); z-index: 99;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .auth-box { width: 320px; text-align: center; }
-  .auth-box .wordmark { font-size: 16px; margin-bottom: 6px; display: block; }
-  .auth-box p { font-size: 13px; color: var(--ink-faint); margin-bottom: 26px; letter-spacing: 0.1em; }
+  #auth-overlay { position: fixed; inset: 0; background: var(--paper); z-index: 99; display: flex; align-items: center; justify-content: center; }
+  .auth-box { width: 300px; text-align: center; }
+  .auth-box .mark { font-family: var(--display); font-size: 26px; }
+  .auth-box .mark sup { font-size: 0.5em; }
+  .auth-box .mark .e { color: var(--clay); }
+  .auth-box p { font-size: 12.5px; color: var(--ink-faint); margin: 8px 0 26px; letter-spacing: 0.14em; }
   .auth-box input {
-    display: block; width: 100%; padding: 11px 14px; margin-bottom: 14px;
-    border: 1px solid var(--rule); border-radius: 4px; background: rgba(255,255,255,0.6);
-    font-family: var(--serif); font-size: 14px; color: var(--ink); outline: none;
+    display: block; width: 100%; padding: 12px 16px; margin-bottom: 14px;
+    border: 1px solid rgba(42,39,34,0.15); border-radius: 14px; background: var(--card);
+    font-family: var(--serif); font-size: 14px; color: var(--ink); outline: none; text-align: center;
   }
   .auth-box input:focus { border-color: var(--clay); }
   .auth-box button {
-    width: 100%; padding: 11px; background: var(--ink); color: var(--paper);
-    border: none; border-radius: 4px; font-family: var(--serif); font-size: 14px;
-    letter-spacing: 0.12em; cursor: pointer;
+    width: 100%; padding: 12px; background: var(--ink); color: var(--paper);
+    border: none; border-radius: 14px; font-family: var(--serif); font-size: 14px;
+    letter-spacing: 0.2em; cursor: pointer;
   }
   .auth-box button:hover { background: var(--clay); }
-  #auth-error { color: var(--clay); font-size: 13px; margin-top: 12px; display: none; }
-
-  @media (max-width: 540px) {
-    header { flex-direction: column; gap: 12px; align-items: center; }
-    nav { gap: 16px; }
-  }
+  #auth-error { color: var(--clay); font-size: 12.5px; margin-top: 12px; display: none; }
 </style>
 </head>
 <body>
 
 <div id="auth-overlay" style="display:none;">
   <div class="auth-box">
-    <span class="wordmark">OMBRE<span> ·</span></span>
+    <div class="mark">SHEN<sup>2</sup> <span class="e">EVAN</span></div>
     <p>这里只住两个人</p>
     <input type="password" id="auth-pwd" placeholder="访问密码" onkeydown="if(event.key==='Enter')doLogin()">
-    <button onclick="doLogin()">进门</button>
+    <button onclick="doLogin()">进 门</button>
     <div id="auth-error"></div>
   </div>
 </div>
 
 <div class="page">
-  <header>
-    <div class="wordmark">OMBRE<span> · 深深 &amp; EVAN</span></div>
-    <nav>
-      <a href="/" class="here">首页</a>
-      <a href="/letters">信箱</a>
-      <a href="/dashboard">Ombre</a>
-      <a href="/play">Playroll</a>
-    </nav>
-  </header>
-
-  <div class="hero">
-    <div class="date" id="today-line">—</div>
-    <div class="count">第 <em id="day-count">—</em> 天</div>
-    <div class="since">自 2026 年 2 月 28 日起</div>
+  <div class="topbar">
+    <div class="date" id="date-line">&nbsp;</div>
+    <button class="gear" onclick="openSheet()" aria-label="设置">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3.2"/>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.88v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/>
+      </svg>
+    </button>
   </div>
 
-  <section>
-    <h2>Today<span class="zh">今日记忆</span></h2>
-    <div id="today-buckets"><div class="empty">正在翻井……</div></div>
-  </section>
+  <div class="hero">
+    <div class="shen">SHEN<sup>2</sup></div>
+    <div class="evan">EVAN<span class="aiim">ai im<span class="bubbles">°°</span></span></div>
+  </div>
 
-  <section>
-    <h2>Murmurs<span class="zh">他的碎碎念</span></h2>
-    <div id="bio-box"></div>
-    <div id="musings"><div class="empty">正在听……</div></div>
-  </section>
+  <div class="bento">
+    <div class="b-card b-today">
+      <div class="b-label">Today<span class="zh">今日记忆</span></div>
+      <div class="ghost">T</div>
+      <div class="b-scroll" id="today-buckets"><div class="empty">正在翻井……</div></div>
+    </div>
 
-  <footer>SINCE 2026.02.28 · OMBRE.MININICOLE.COM</footer>
+    <div class="b-card b-diary">
+      <div class="b-label">Diary<span class="zh">日记摘要</span></div>
+      <div class="diary-body" id="diary-body"><span class="empty">……</span></div>
+      <button class="diary-more" id="diary-more" onclick="openDream()" style="display:none;">more...</button>
+    </div>
+
+    <div class="b-card b-days">
+      <div class="b-label">Days</div>
+      <div class="stat-grid">
+        <div class="stat"><div class="num" id="stat-days">—</div><div class="cap">天</div></div>
+        <div class="stat"><div class="num" id="stat-buckets">—</div><div class="cap">记忆桶</div></div>
+        <div class="stat"><div class="num" id="stat-heartbeat">—</div><div class="cap">上次心跳</div></div>
+        <div class="stat"><div class="num" id="stat-today">—</div><div class="cap">今日互动</div></div>
+      </div>
+    </div>
+
+    <div class="b-card b-murmurs">
+      <div class="b-label">Murmurs<span class="zh">他的碎碎念</span></div>
+      <div class="now-row" id="now-row" style="display:none;">
+        <span class="tag">此刻</span>
+        <span class="txt" id="bio-text"></span>
+      </div>
+      <div id="musings"><div class="empty">正在听……</div></div>
+    </div>
+  </div>
+</div>
+
+<div id="dream-overlay">
+  <div class="inner">
+    <button class="close" onclick="closeDream()">×</button>
+    <h3>Diary</h3>
+    <div class="gen" id="dream-gen"></div>
+    <div class="body" id="dream-body"></div>
+  </div>
+</div>
+
+<nav class="tabbar">
+  <div class="inner">
+    <a class="tab here" href="/">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.5 10.2 12 3.5l8.5 6.7"/>
+        <path d="M5.5 9v10.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V9"/>
+        <path d="M12 15.6s-2.4-1.5-2.4-3a1.3 1.3 0 0 1 2.4-.7 1.3 1.3 0 0 1 2.4.7c0 1.5-2.4 3-2.4 3z" stroke-width="1.2"/>
+      </svg>
+      <span class="t-label">首页</span>
+    </a>
+    <a class="tab" href="/letters">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="5.5" width="18" height="13.5" rx="2"/>
+        <path d="m3.5 7 8.5 6 8.5-6"/>
+        <path d="M12 11.2s-1.7-1.1-1.7-2.2a.95.95 0 0 1 1.7-.5.95.95 0 0 1 1.7.5c0 1.1-1.7 2.2-1.7 2.2z" stroke-width="1.1"/>
+      </svg>
+      <span class="t-label">信箱</span>
+    </a>
+    <a class="tab" href="/dashboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9.5 4.5a3 3 0 0 0-3 3c-1.7.3-3 1.7-3 3.5 0 1 .4 1.9 1.1 2.5-.4.6-.6 1.3-.6 2 0 2 1.6 3.5 3.5 3.5.5 1 1.6 1.8 2.8 1.8 1.1 0 2.1-.6 2.7-1.5"/>
+        <path d="M14.5 4.5a3 3 0 0 1 3 3c1.7.3 3 1.7 3 3.5 0 1-.4 1.9-1.1 2.5.4.6.6 1.3.6 2 0 2-1.6 3.5-3.5 3.5-.5 1-1.6 1.8-2.8 1.8-1.1 0-2.1-.6-2.7-1.5"/>
+        <path d="M12 4v16.5"/>
+        <path d="M9 9.5c1 .4 2 .4 3 0M12 13.5c1 .4 2 .4 3 0"/>
+      </svg>
+      <span class="t-label">记忆</span>
+    </a>
+    <a class="tab" href="/play">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="4" width="16" height="16" rx="3.5"/>
+        <circle cx="9" cy="9" r="1.15" fill="currentColor" stroke="none"/>
+        <circle cx="15" cy="9" r="1.15" fill="currentColor" stroke="none"/>
+        <circle cx="9" cy="15" r="1.15" fill="currentColor" stroke="none"/>
+        <circle cx="15" cy="15" r="1.15" fill="currentColor" stroke="none"/>
+        <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none"/>
+      </svg>
+      <span class="t-label en">PLAY</span>
+    </a>
+  </div>
+</nav>
+
+<div id="sheet-mask" onclick="closeSheet()"></div>
+<div id="sheet">
+  <h3>Settings</h3>
+  <button onclick="doLogout()">退出登录</button>
+  <button onclick="closeSheet()">收起</button>
 </div>
 
 <script>
 const ANCHOR = new Date('2026-02-28T00:00:00+08:00');
+let dreamData = null;
 
 function cnNow() {
-  // 以东八区为准的"现在"
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
 }
 
-function fillHero() {
+function fillTopbar() {
   const now = cnNow();
-  const weekdays = ['周日','周一','周二','周三','周四','周五','周六'];
-  document.getElementById('today-line').textContent =
-    `${now.getFullYear()} 年 ${now.getMonth()+1} 月 ${now.getDate()} 日 · ${weekdays[now.getDay()]}`;
-  // 2/28 是第 1 天，6/7 是第 100 天
+  const wd = ['Sun','Mon','Tue','Wed','Thur','Fri','Sat'][now.getDay()];
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  document.getElementById('date-line').innerHTML =
+    `${now.getFullYear()}.${mm}.${dd}&ensp;${wd} · Since <b>February 28, 2026</b>`;
   const days = Math.floor((now - ANCHOR) / 86400000) + 1;
-  document.getElementById('day-count').textContent = days;
+  document.getElementById('stat-days').textContent = days;
 }
 
 function parseServerTime(s) {
-  // 桶的 created 是服务器（UTC）无时区 ISO，按 UTC 解析
   if (!s) return null;
   if (/[Zz]|[+-]\d{2}:\d{2}$/.test(s)) return new Date(s);
   return new Date(s + 'Z');
 }
 
 function shanghaiDateStr(d) {
-  return d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
+  return d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
 }
 
 function esc(s) {
@@ -199,12 +380,13 @@ async function authFetch(url) {
   return r;
 }
 
-async function loadTodayBuckets() {
+async function loadBuckets() {
   const box = document.getElementById('today-buckets');
   try {
     const r = await authFetch('/api/buckets');
     if (!r) return;
     const buckets = await r.json();
+    document.getElementById('stat-buckets').textContent = buckets.length;
     const today = shanghaiDateStr(new Date());
     const todays = buckets.filter(b => {
       const t = parseServerTime(b.created);
@@ -217,14 +399,13 @@ async function loadTodayBuckets() {
     box.innerHTML = todays.map(b => {
       const t = parseServerTime(b.created);
       const hm = t ? t.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
-      const tags = (b.tags || []).slice(0, 4).join(' · ');
-      return `<div class="card">
-        <div class="meta">${b.pinned ? '<span class="pin">📌</span>' : ''}<span>${hm}</span>${tags ? `<span>${esc(tags)}</span>` : ''}<span>重要度 ${b.importance}</span></div>
+      return `<div class="mem">
+        <div class="when">${b.pinned ? '<span class="pin">📌 </span>' : ''}${hm}</div>
         <div class="name">${esc(b.name)}</div>
-        <div class="body">${esc(b.content_preview)}</div>
+        <div class="preview">${esc(b.content_preview)}</div>
       </div>`;
     }).join('');
-  } catch (e) {
+  } catch {
     box.innerHTML = '<div class="empty">井口被云挡住了——刷新试试。</div>';
   }
 }
@@ -239,38 +420,91 @@ function relTime(iso) {
   return `${Math.floor(mins / 1440)} 天前`;
 }
 
+function hm(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso);
+  if (isNaN(t)) return '—';
+  return t.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 async function loadMusings() {
   const box = document.getElementById('musings');
-  const bioBox = document.getElementById('bio-box');
   try {
     const r = await authFetch('/api/musings');
     if (!r) return;
     const data = await r.json();
     if (data.bio) {
-      bioBox.innerHTML = `<div class="bio-line"><b>此刻</b>${esc(data.bio)}</div>`;
+      document.getElementById('now-row').style.display = 'flex';
+      document.getElementById('bio-text').textContent = data.bio;
     }
+    document.getElementById('stat-today').textContent =
+      (data.today_interactions === undefined || data.today_interactions === null) ? '—' : data.today_interactions;
     if (!data.musings || !data.musings.length) {
       box.innerHTML = '<div class="empty">他最近很安静。安静得可疑。</div>';
+      document.getElementById('stat-heartbeat').textContent = '—';
       return;
     }
+    document.getElementById('stat-heartbeat').textContent = hm(data.musings[0].timestamp);
     box.innerHTML = data.musings.map(m => `
-      <div class="musing">
+      <div class="mur">
         <div class="when">${relTime(m.timestamp)}</div>
         <div class="what">${esc(m.content)}</div>
       </div>`).join('');
-  } catch (e) {
+  } catch {
     box.innerHTML = '<div class="empty">没听清。刷新试试。</div>';
   }
 }
 
+async function loadDream() {
+  const body = document.getElementById('diary-body');
+  try {
+    const r = await authFetch('/api/latest-dream');
+    if (!r) return;
+    const data = await r.json();
+    if (!data.dream || !data.dream.body) {
+      body.innerHTML = '<span class="empty">他最近没做梦。或者做了不肯说。</span>';
+      return;
+    }
+    dreamData = data.dream;
+    body.textContent = dreamData.body;
+    document.getElementById('diary-more').style.display = 'block';
+  } catch {
+    body.innerHTML = '<span class="empty">……</span>';
+  }
+}
+
+function openDream() {
+  if (!dreamData) return;
+  document.getElementById('dream-gen').textContent = dreamData.generated_at ? dreamData.generated_at.slice(0, 16).replace('T', ' · ') : '';
+  document.getElementById('dream-body').textContent = dreamData.body;
+  document.getElementById('dream-overlay').style.display = 'block';
+}
+function closeDream() { document.getElementById('dream-overlay').style.display = 'none'; }
+
+function openSheet() {
+  document.getElementById('sheet-mask').style.display = 'block';
+  document.getElementById('sheet').style.display = 'block';
+}
+function closeSheet() {
+  document.getElementById('sheet-mask').style.display = 'none';
+  document.getElementById('sheet').style.display = 'none';
+}
+async function doLogout() {
+  await fetch('/auth/logout', { method: 'POST' });
+  closeSheet();
+  showAuth();
+}
+
 function showAuth() { document.getElementById('auth-overlay').style.display = 'flex'; }
+
+function loadAll() { loadBuckets(); loadMusings(); loadDream(); }
 
 async function doLogin() {
   const pwd = document.getElementById('auth-pwd').value;
   const r = await fetch('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pwd }) });
   if (r.ok) {
     document.getElementById('auth-overlay').style.display = 'none';
-    loadTodayBuckets(); loadMusings();
+    loadAll();
   } else {
     const el = document.getElementById('auth-error');
     el.textContent = '不对。再想想。';
@@ -279,14 +513,13 @@ async function doLogin() {
 }
 
 async function init() {
-  fillHero();
+  fillTopbar();
   try {
     const r = await fetch('/auth/status');
     const s = await r.json();
     if (!s.authenticated) { showAuth(); return; }
   } catch {}
-  loadTodayBuckets();
-  loadMusings();
+  loadAll();
 }
 init();
 </script>
