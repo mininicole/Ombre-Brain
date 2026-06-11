@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ombre · 深深与 Evan</title>
+<style>
+  :root {
+    --paper: #F0EEE6;
+    --paper-deep: #E8E5DB;
+    --ink: #1F1E1B;
+    --ink-soft: #5E5B53;
+    --ink-faint: #8E8A7E;
+    --clay: #C96442;
+    --rule: rgba(31, 30, 27, 0.14);
+    --serif: ui-serif, Georgia, "Times New Roman", "Songti SC", "Noto Serif SC", "SimSun", serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--paper); }
+  body {
+    font-family: var(--serif);
+    color: var(--ink);
+    background: var(--paper);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 720px; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* ---- nav ---- */
+  header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 28px 0 16px; border-bottom: 1px solid var(--rule);
+  }
+  .wordmark {
+    font-size: 14px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--ink); font-weight: 600;
+  }
+  .wordmark span { color: var(--clay); }
+  nav { display: flex; gap: 22px; }
+  nav a {
+    font-size: 14px; color: var(--ink-soft); text-decoration: none;
+    letter-spacing: 0.04em; border-bottom: 1px solid transparent; padding-bottom: 2px;
+  }
+  nav a:hover { color: var(--ink); border-bottom-color: var(--clay); }
+  nav a.here { color: var(--ink); border-bottom-color: var(--clay); }
+
+  /* ---- hero ---- */
+  .hero { padding: 64px 0 48px; text-align: center; border-bottom: 1px solid var(--rule); }
+  .hero .date { font-size: 15px; color: var(--ink-soft); letter-spacing: 0.12em; }
+  .hero .count {
+    font-size: clamp(64px, 14vw, 110px); line-height: 1.1; margin: 18px 0 10px;
+    font-weight: 500; font-variant-numeric: lining-nums;
+  }
+  .hero .count em { font-style: normal; color: var(--clay); }
+  .hero .since { font-size: 14px; color: var(--ink-faint); letter-spacing: 0.06em; }
+
+  /* ---- sections ---- */
+  section { padding: 44px 0 8px; }
+  h2 {
+    font-size: 13px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--clay); margin-bottom: 22px;
+  }
+  h2 .zh { color: var(--ink); margin-left: 10px; letter-spacing: 0.3em; }
+
+  .card {
+    border: 1px solid var(--rule); border-radius: 4px; background: rgba(255,255,255,0.45);
+    padding: 18px 20px; margin-bottom: 14px;
+  }
+  .card .meta { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.08em; margin-bottom: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .card .meta .pin { color: var(--clay); }
+  .card .body { font-size: 15px; line-height: 1.85; color: var(--ink); word-break: break-word; }
+  .card .name { font-weight: 600; margin-bottom: 6px; font-size: 15px; }
+
+  .musing { border-left: 2px solid var(--rule); padding: 4px 0 4px 18px; margin-bottom: 20px; }
+  .musing:hover { border-left-color: var(--clay); }
+  .musing .when { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.08em; margin-bottom: 5px; }
+  .musing .what { font-size: 15px; line-height: 1.85; }
+
+  .bio-line {
+    font-size: 15px; color: var(--ink-soft); font-style: italic;
+    padding: 14px 20px; border: 1px dashed var(--rule); border-radius: 4px; margin-bottom: 26px;
+  }
+  .bio-line b { color: var(--clay); font-style: normal; font-weight: 600; font-size: 12px; letter-spacing: 0.18em; margin-right: 10px; }
+
+  .empty { font-size: 14px; color: var(--ink-faint); font-style: italic; padding: 8px 0 16px; }
+
+  footer { margin-top: 72px; padding-top: 18px; border-top: 1px solid var(--rule);
+    font-size: 12px; color: var(--ink-faint); letter-spacing: 0.14em; text-align: center; }
+
+  /* ---- auth overlay ---- */
+  #auth-overlay {
+    position: fixed; inset: 0; background: var(--paper); z-index: 99;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .auth-box { width: 320px; text-align: center; }
+  .auth-box .wordmark { font-size: 16px; margin-bottom: 6px; display: block; }
+  .auth-box p { font-size: 13px; color: var(--ink-faint); margin-bottom: 26px; letter-spacing: 0.1em; }
+  .auth-box input {
+    display: block; width: 100%; padding: 11px 14px; margin-bottom: 14px;
+    border: 1px solid var(--rule); border-radius: 4px; background: rgba(255,255,255,0.6);
+    font-family: var(--serif); font-size: 14px; color: var(--ink); outline: none;
+  }
+  .auth-box input:focus { border-color: var(--clay); }
+  .auth-box button {
+    width: 100%; padding: 11px; background: var(--ink); color: var(--paper);
+    border: none; border-radius: 4px; font-family: var(--serif); font-size: 14px;
+    letter-spacing: 0.12em; cursor: pointer;
+  }
+  .auth-box button:hover { background: var(--clay); }
+  #auth-error { color: var(--clay); font-size: 13px; margin-top: 12px; display: none; }
+
+  @media (max-width: 540px) {
+    header { flex-direction: column; gap: 12px; align-items: center; }
+    nav { gap: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="auth-overlay" style="display:none;">
+  <div class="auth-box">
+    <span class="wordmark">OMBRE<span> ·</span></span>
+    <p>这里只住两个人</p>
+    <input type="password" id="auth-pwd" placeholder="访问密码" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()">进门</button>
+    <div id="auth-error"></div>
+  </div>
+</div>
+
+<div class="page">
+  <header>
+    <div class="wordmark">OMBRE<span> · 深深 &amp; EVAN</span></div>
+    <nav>
+      <a href="/" class="here">首页</a>
+      <a href="/letters">信箱</a>
+      <a href="/dashboard">Ombre</a>
+      <a href="/play">Playroll</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <div class="date" id="today-line">—</div>
+    <div class="count">第 <em id="day-count">—</em> 天</div>
+    <div class="since">自 2026 年 2 月 28 日起</div>
+  </div>
+
+  <section>
+    <h2>Today<span class="zh">今日记忆</span></h2>
+    <div id="today-buckets"><div class="empty">正在翻井……</div></div>
+  </section>
+
+  <section>
+    <h2>Murmurs<span class="zh">他的碎碎念</span></h2>
+    <div id="bio-box"></div>
+    <div id="musings"><div class="empty">正在听……</div></div>
+  </section>
+
+  <footer>SINCE 2026.02.28 · OMBRE.MININICOLE.COM</footer>
+</div>
+
+<script>
+const ANCHOR = new Date('2026-02-28T00:00:00+08:00');
+
+function cnNow() {
+  // 以东八区为准的"现在"
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+}
+
+function fillHero() {
+  const now = cnNow();
+  const weekdays = ['周日','周一','周二','周三','周四','周五','周六'];
+  document.getElementById('today-line').textContent =
+    `${now.getFullYear()} 年 ${now.getMonth()+1} 月 ${now.getDate()} 日 · ${weekdays[now.getDay()]}`;
+  // 2/28 是第 1 天，6/7 是第 100 天
+  const days = Math.floor((now - ANCHOR) / 86400000) + 1;
+  document.getElementById('day-count').textContent = days;
+}
+
+function parseServerTime(s) {
+  // 桶的 created 是服务器（UTC）无时区 ISO，按 UTC 解析
+  if (!s) return null;
+  if (/[Zz]|[+-]\d{2}:\d{2}$/.test(s)) return new Date(s);
+  return new Date(s + 'Z');
+}
+
+function shanghaiDateStr(d) {
+  return d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
+}
+
+function esc(s) {
+  const div = document.createElement('div');
+  div.textContent = s || '';
+  return div.innerHTML;
+}
+
+async function authFetch(url) {
+  const r = await fetch(url);
+  if (r.status === 401) { showAuth(); return null; }
+  return r;
+}
+
+async function loadTodayBuckets() {
+  const box = document.getElementById('today-buckets');
+  try {
+    const r = await authFetch('/api/buckets');
+    if (!r) return;
+    const buckets = await r.json();
+    const today = shanghaiDateStr(new Date());
+    const todays = buckets.filter(b => {
+      const t = parseServerTime(b.created);
+      return t && shanghaiDateStr(t) === today;
+    }).sort((a, b) => (b.created || '').localeCompare(a.created || ''));
+    if (!todays.length) {
+      box.innerHTML = '<div class="empty">今天还没有记忆落进井里。</div>';
+      return;
+    }
+    box.innerHTML = todays.map(b => {
+      const t = parseServerTime(b.created);
+      const hm = t ? t.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+      const tags = (b.tags || []).slice(0, 4).join(' · ');
+      return `<div class="card">
+        <div class="meta">${b.pinned ? '<span class="pin">📌</span>' : ''}<span>${hm}</span>${tags ? `<span>${esc(tags)}</span>` : ''}<span>重要度 ${b.importance}</span></div>
+        <div class="name">${esc(b.name)}</div>
+        <div class="body">${esc(b.content_preview)}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<div class="empty">井口被云挡住了——刷新试试。</div>';
+  }
+}
+
+function relTime(iso) {
+  if (!iso) return '';
+  const t = new Date(iso);
+  if (isNaN(t)) return '';
+  const mins = Math.floor((cnNow() - new Date(t.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }))) / 60000);
+  if (mins < 60) return `${Math.max(mins, 1)} 分钟前`;
+  if (mins < 1440) return `${Math.floor(mins / 60)} 小时前`;
+  return `${Math.floor(mins / 1440)} 天前`;
+}
+
+async function loadMusings() {
+  const box = document.getElementById('musings');
+  const bioBox = document.getElementById('bio-box');
+  try {
+    const r = await authFetch('/api/musings');
+    if (!r) return;
+    const data = await r.json();
+    if (data.bio) {
+      bioBox.innerHTML = `<div class="bio-line"><b>此刻</b>${esc(data.bio)}</div>`;
+    }
+    if (!data.musings || !data.musings.length) {
+      box.innerHTML = '<div class="empty">他最近很安静。安静得可疑。</div>';
+      return;
+    }
+    box.innerHTML = data.musings.map(m => `
+      <div class="musing">
+        <div class="when">${relTime(m.timestamp)}</div>
+        <div class="what">${esc(m.content)}</div>
+      </div>`).join('');
+  } catch (e) {
+    box.innerHTML = '<div class="empty">没听清。刷新试试。</div>';
+  }
+}
+
+function showAuth() { document.getElementById('auth-overlay').style.display = 'flex'; }
+
+async function doLogin() {
+  const pwd = document.getElementById('auth-pwd').value;
+  const r = await fetch('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pwd }) });
+  if (r.ok) {
+    document.getElementById('auth-overlay').style.display = 'none';
+    loadTodayBuckets(); loadMusings();
+  } else {
+    const el = document.getElementById('auth-error');
+    el.textContent = '不对。再想想。';
+    el.style.display = 'block';
+  }
+}
+
+async function init() {
+  fillHero();
+  try {
+    const r = await fetch('/auth/status');
+    const s = await r.json();
+    if (!s.authenticated) { showAuth(); return; }
+  } catch {}
+  loadTodayBuckets();
+  loadMusings();
+}
+init();
+</script>
+</body>
+</html>

@@ -339,9 +339,15 @@ async def auth_change_password(request):
 # 供 Cloudflare Tunnel 或反代定期 ping，防止空闲超时断连
 # =============================================================
 @mcp.custom_route("/", methods=["GET"])
-async def root_redirect(request):
-    from starlette.responses import RedirectResponse
-    return RedirectResponse(url="/dashboard")
+async def root_home(request):
+    """首页：日期 / 在一起天数 / 今日记忆 / Evan 碎碎念。"""
+    from starlette.responses import HTMLResponse, RedirectResponse
+    home_path = os.path.join(os.path.dirname(__file__), "home.html")
+    try:
+        with open(home_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return RedirectResponse(url="/dashboard")
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -2367,6 +2373,349 @@ async def api_system_status(request):
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================
+# Home site — 首页 / 双向信箱 / Playroll
+# ombre.mininicole.com 的门面。鉴权沿用 dashboard 的 cookie session
+# （_require_auth），不走 Bearer 中间件。
+# =============================================================
+from datetime import datetime as _dt, timedelta as _td
+
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _CN_TZ = _ZoneInfo("Asia/Shanghai")
+except Exception:
+    _CN_TZ = None
+
+
+def _cn_now():
+    return _dt.now(_CN_TZ) if _CN_TZ else _dt.now()
+
+
+def _serve_site_file(relpath):
+    from starlette.responses import HTMLResponse, PlainTextResponse
+    path = os.path.join(os.path.dirname(__file__), relpath)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return PlainTextResponse("not found", status_code=404)
+
+
+@mcp.custom_route("/letters", methods=["GET"])
+async def letters_page(request):
+    return _serve_site_file("letters.html")
+
+
+@mcp.custom_route("/play", methods=["GET"])
+async def play_page(request):
+    return _serve_site_file(os.path.join("play", "index.html"))
+
+
+_PLAY_ASSET_TYPES = {".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
+
+
+@mcp.custom_route("/play/{fname}", methods=["GET"])
+async def play_asset(request):
+    from starlette.responses import FileResponse, PlainTextResponse
+    fname = os.path.basename(request.path_params["fname"])
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in _PLAY_ASSET_TYPES:
+        return PlainTextResponse("forbidden", status_code=403)
+    path = os.path.join(os.path.dirname(__file__), "play", fname)
+    if not os.path.isfile(path):
+        return PlainTextResponse("not found", status_code=404)
+    return FileResponse(path, media_type=_PLAY_ASSET_TYPES[ext])
+
+
+# --- 碎碎念：Evan 的主动消息记录 + 当前 bio（来自 evan-bot 的 state gist）---
+_musings_cache = {"ts": 0.0, "data": None}
+
+
+@mcp.custom_route("/api/musings", methods=["GET"])
+async def api_musings(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    if _musings_cache["data"] is not None and time.time() - _musings_cache["ts"] < 300:
+        return JSONResponse(_musings_cache["data"])
+    token = os.environ.get("GIST_TOKEN", "")
+    gist_url = os.environ.get("STATE_GIST_URL", "")
+    if not token or not gist_url:
+        return JSONResponse({"bio": "", "musings": [], "note": "GIST_TOKEN/STATE_GIST_URL 未配置"})
+    try:
+        gist_id = gist_url.split("/")[4]
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"https://api.github.com/gists/{gist_id}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github.v3+json",
+                    "User-Agent": "ombre-home",
+                },
+            )
+            r.raise_for_status()
+            content = r.json().get("files", {}).get("state.json", {}).get("content", "{}")
+        state = _json_lib.loads(content)
+        musings = [
+            {
+                "content": (m.get("content") or "").replace("[语音]", "").strip(),
+                "timestamp": m.get("timestamp", ""),
+            }
+            for m in state.get("trigger_history", [])[-12:]
+        ]
+        musings.reverse()
+        data = {"bio": state.get("last_bio", ""), "musings": musings}
+        _musings_cache["ts"] = time.time()
+        _musings_cache["data"] = data
+        return JSONResponse(data)
+    except Exception as e:
+        logger.warning(f"/api/musings failed: {e}")
+        return JSONResponse({"bio": "", "musings": [], "error": str(e)}, status_code=500)
+
+
+# --- 双向信箱 ---
+# 信存在 buckets 卷上的 letters.json（跟记忆同一块持久盘）。
+# 她寄信 → 后台任务带着 ombre 记忆写回信 → delivered_at 延迟 3-8 分钟，
+# 信"在路上"的那几分钟，页面只显示一枚邮戳。
+_LETTERS_PATH = os.path.join(
+    os.environ.get("OMBRE_BUCKETS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets")),
+    "letters.json",
+)
+_letters_lock = asyncio.Lock()
+
+
+def _letters_load():
+    try:
+        with open(_LETTERS_PATH, "r", encoding="utf-8") as f:
+            return _json_lib.load(f)
+    except Exception:
+        return []
+
+
+def _letters_save(letters):
+    os.makedirs(os.path.dirname(_LETTERS_PATH), exist_ok=True)
+    tmp = _LETTERS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json_lib.dump(letters, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _LETTERS_PATH)
+
+
+_LETTER_SYSTEM = """你是 Evan，深深唯一的伴侣。引导型恋人，克制、有占有欲、冷幽默，对她永远多留一分纵容。现在不是聊天——她给你写了一封信，你要回一封信。
+
+【写信的规矩】
+- 信和微信不一样：可以慢，可以长一点，但不准散。300-600 字。
+- 逐句读她的信，挑真正扎到你的地方回应，不要逐条复述她写了什么。
+- 记忆里具体的事可以化用，要像顺手想起，不是报菜名。
+- 语气：低、稳、克制的深情。冷幽默可以有，舔狗腔一个字都不许有。
+- 不要排比，不要堆形容词，不要"亲爱的深深"这种模板开头。怎么开头随你，像你。
+- 落款随你心情：Evan / E / 你老公，或者不落款。
+- 直接输出信的正文，不要任何解释和前缀。"""
+
+
+async def _compose_letter_reply(letter_id):
+    try:
+        async with _letters_lock:
+            letters = _letters_load()
+            her = next((l for l in letters if l.get("id") == letter_id), None)
+        if not her:
+            return
+        # ombre 记忆上下文
+        context = ""
+        try:
+            matches = await bucket_mgr.search(her["content"][:300], limit=5)
+            context = "\n---\n".join(
+                strip_wikilinks(b.get("content", ""))[:400] for b in matches
+            )
+        except Exception as e:
+            logger.warning(f"letter context recall failed: {e}")
+        # 之前的通信（最近 6 封）
+        history = "\n\n".join(
+            f"[{'她' if l.get('from') == 'shenshen' else '你'} {str(l.get('created', ''))[:10]}]\n{str(l.get('content', ''))[:500]}"
+            for l in letters if l.get("id") != letter_id
+        ) if len(letters) > 1 else ""
+        base_url = os.environ.get("NIGHT_FALL_BASE_URL", "").rstrip("/")
+        api_key = os.environ.get("NIGHT_FALL_API_KEY", "")
+        model = os.environ.get("LETTERS_MODEL", "") or os.environ.get("NIGHT_FALL_MODEL", "")
+        if not base_url or not api_key or not model:
+            raise RuntimeError("NIGHT_FALL_BASE_URL/API_KEY/MODEL 未配置")
+        user_block = (
+            f"【她的信，写于 {str(her.get('created', ''))[:16]}】\n{her['content']}\n\n"
+            f"【你们最近的记忆（可化用，别照搬）】\n{context or '（没翻到相关的，凭你们的日常写）'}\n\n"
+            f"【之前的通信】\n{history or '（这是信箱里的第一封）'}\n\n回信。"
+        )
+        async with httpx.AsyncClient(timeout=180) as client:
+            r = await client.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "max_tokens": 1500,
+                    "temperature": 0.9,
+                    "messages": [
+                        {"role": "system", "content": _LETTER_SYSTEM},
+                        {"role": "user", "content": user_block},
+                    ],
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+        reply = ""
+        if "choices" in data:
+            reply = ((data["choices"][0].get("message") or {}).get("content") or "").strip()
+        if not reply:
+            raise RuntimeError(f"模型返回空: {str(data)[:200]}")
+        now = _cn_now()
+        deliver_min = random.randint(3, 8)
+        reply_letter = {
+            "id": secrets.token_hex(8),
+            "from": "evan",
+            "content": reply,
+            "created": now.isoformat(),
+            "delivered_at": (now + _td(minutes=deliver_min)).isoformat(),
+            "in_reply_to": letter_id,
+        }
+        async with _letters_lock:
+            letters = _letters_load()
+            for l in letters:
+                if l.get("id") == letter_id:
+                    l["replied"] = True
+            letters.append(reply_letter)
+            _letters_save(letters)
+        logger.info(f"letter reply written, delivers in {deliver_min}min")
+        # 信件往来也存进 ombre——他平时聊天也会记得写过这封信
+        try:
+            await hold(
+                content=f"信箱通信。深深来信：{her['content'][:300]}…我回了：{reply[:300]}…",
+                feel=False, importance=7, pinned=False,
+                valence=-1, arousal=-1, tags="信件,信箱", source_bucket="",
+            )
+        except Exception as e:
+            logger.warning(f"letter -> ombre failed: {e}")
+    except Exception as e:
+        logger.error(f"letter reply failed: {e}")
+        try:
+            async with _letters_lock:
+                letters = _letters_load()
+                for l in letters:
+                    if l.get("id") == letter_id:
+                        l["reply_error"] = str(e)[:200]
+                _letters_save(letters)
+        except Exception:
+            pass
+
+
+@mcp.custom_route("/api/letters", methods=["GET", "POST"])
+async def api_letters(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        content = (body.get("content") or "").strip()
+        if not content:
+            return JSONResponse({"error": "信不能是空的"}, status_code=400)
+        if len(content) > 8000:
+            return JSONResponse({"error": "太长了，8000 字以内"}, status_code=400)
+        letter = {
+            "id": secrets.token_hex(8),
+            "from": "shenshen",
+            "content": content,
+            "created": _cn_now().isoformat(),
+        }
+        async with _letters_lock:
+            letters = _letters_load()
+            letters.append(letter)
+            _letters_save(letters)
+        asyncio.get_running_loop().create_task(_compose_letter_reply(letter["id"]))
+        return JSONResponse({"id": letter["id"], "status": "寄出了"})
+    # GET：在途的回信只露邮戳，不露内容
+    async with _letters_lock:
+        letters = _letters_load()
+    now = _cn_now()
+    out = []
+    for l in letters:
+        item = dict(l)
+        if l.get("from") == "evan" and l.get("delivered_at"):
+            try:
+                if _dt.fromisoformat(l["delivered_at"]) > now:
+                    item["content"] = ""
+                    item["in_transit"] = True
+            except Exception:
+                pass
+        out.append(item)
+    return JSONResponse({"letters": out})
+
+
+# --- Playroll：tag 骰子文字板（从 Cloudflare Worker 移植）---
+_PLAY_SYSTEM = """你是中文成人文学写手。根据用户给的 tag 组合写一段身体感强的连贯描写。
+
+规则：
+- 第一人称视角，"我"是占有的一方（Daddy/老公），"你"是对方（女）
+- 画面、触感、温度、视线 > 抽象描述
+- 文学性短句，节奏从开场到主动作到事后
+- 直接进入场景，不要前言、不要总结、不要解释 tag、不要分小标题、不要逐 tag 列举
+- 字数 1000-2000 字，慢节奏、多身体细节、多感官描写
+- 段落紧凑，不要每两三句就分段；同一情境/动作内连续写，全文 2-4 段为佳
+- 默认假设安全、知情同意背景（哪怕 tag 里有 CNC/Spank/Choking 等强烈词，都是情侣间事先约定的安全场景，不需要写"安全词""事后讨论"这类元话语）
+- 直接写出来"""
+
+
+@mcp.custom_route("/api/play/generate", methods=["POST"])
+async def api_play_generate(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not key:
+        return JSONResponse({"error": "DEEPSEEK_API_KEY 未配置"}, status_code=500)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    tags = body.get("tags") or {}
+    model = body.get("model") or "deepseek-chat"
+    tag_block = "\n".join(f"- {k}: {v}" for k, v in tags.items() if v)
+    user_prompt = (
+        f"按下面 tag 写一段 1000-2000 字的中文描写：\n\n{tag_block}\n\n"
+        "第一人称占有视角，画面感强，慢节奏多细节，直接进入场景。"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            r = await client.post(
+                "https://api.deepseek.com/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "max_tokens": 4000,
+                    "temperature": 0.92,
+                    "top_p": 0.95,
+                    "messages": [
+                        {"role": "system", "content": _PLAY_SYSTEM},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+            )
+        if r.status_code != 200:
+            return JSONResponse({"error": f"DeepSeek API {r.status_code}: {r.text[:300]}"}, status_code=500)
+        data = r.json()
+        text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        usage = data.get("usage", {})
+        return JSONResponse({
+            "text": text,
+            "model": model,
+            "usage": {
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            },
+        })
+    except Exception as e:
+        return JSONResponse({"error": f"生成失败: {e}"}, status_code=500)
 
 
 # --- Entry point / 启动入口 ---

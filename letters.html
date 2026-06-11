@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>信箱 · Ombre</title>
+<style>
+  :root {
+    --paper: #F0EEE6;
+    --paper-deep: #E8E5DB;
+    --ink: #1F1E1B;
+    --ink-soft: #5E5B53;
+    --ink-faint: #8E8A7E;
+    --clay: #C96442;
+    --rule: rgba(31, 30, 27, 0.14);
+    --serif: ui-serif, Georgia, "Times New Roman", "Songti SC", "Noto Serif SC", "SimSun", serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--paper); }
+  body { font-family: var(--serif); color: var(--ink); background: var(--paper); min-height: 100vh; -webkit-font-smoothing: antialiased; }
+  .page { max-width: 720px; margin: 0 auto; padding: 0 24px 96px; }
+
+  header { display: flex; justify-content: space-between; align-items: baseline; padding: 28px 0 16px; border-bottom: 1px solid var(--rule); }
+  .wordmark { font-size: 14px; letter-spacing: 0.22em; text-transform: uppercase; font-weight: 600; }
+  .wordmark span { color: var(--clay); }
+  nav { display: flex; gap: 22px; }
+  nav a { font-size: 14px; color: var(--ink-soft); text-decoration: none; letter-spacing: 0.04em; border-bottom: 1px solid transparent; padding-bottom: 2px; }
+  nav a:hover { color: var(--ink); border-bottom-color: var(--clay); }
+  nav a.here { color: var(--ink); border-bottom-color: var(--clay); }
+
+  .page-title { padding: 48px 0 8px; text-align: center; }
+  .page-title h1 { font-size: 32px; font-weight: 500; letter-spacing: 0.1em; }
+  .page-title p { font-size: 13px; color: var(--ink-faint); margin-top: 10px; letter-spacing: 0.12em; }
+
+  /* ---- compose ---- */
+  .compose { margin: 40px 0 56px; border: 1px solid var(--rule); border-radius: 4px; background: rgba(255,255,255,0.5); padding: 24px; }
+  .compose label { display: block; font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--clay); font-weight: 600; margin-bottom: 14px; }
+  .compose textarea {
+    width: 100%; min-height: 180px; border: none; outline: none; resize: vertical;
+    background: transparent; font-family: var(--serif); font-size: 15px; line-height: 2.1; color: var(--ink);
+    background-image: repeating-linear-gradient(transparent, transparent calc(2.1em - 1px), var(--rule) calc(2.1em - 1px), var(--rule) 2.1em);
+  }
+  .compose .row { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
+  .compose .hint { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.06em; }
+  .compose button {
+    padding: 10px 28px; background: var(--ink); color: var(--paper); border: none; border-radius: 4px;
+    font-family: var(--serif); font-size: 14px; letter-spacing: 0.14em; cursor: pointer;
+  }
+  .compose button:hover:not(:disabled) { background: var(--clay); }
+  .compose button:disabled { opacity: 0.4; cursor: default; }
+
+  /* ---- letters ---- */
+  .thread-label { font-size: 13px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: var(--clay); margin-bottom: 26px; }
+  .thread-label .zh { color: var(--ink); margin-left: 10px; letter-spacing: 0.3em; }
+
+  .letter { border: 1px solid var(--rule); border-radius: 4px; margin-bottom: 26px; background: rgba(255,255,255,0.5); overflow: hidden; }
+  .letter .head { display: flex; justify-content: space-between; padding: 13px 22px; border-bottom: 1px solid var(--rule); font-size: 12px; letter-spacing: 0.12em; color: var(--ink-faint); }
+  .letter .head .from { font-weight: 600; color: var(--ink-soft); }
+  .letter.evan .head .from { color: var(--clay); }
+  .letter .body { padding: 22px; font-size: 15px; line-height: 2.05; white-space: pre-wrap; word-break: break-word; }
+  .letter.evan { background: var(--paper-deep); }
+
+  .transit { text-align: center; padding: 26px 22px; }
+  .transit .stamp {
+    display: inline-block; border: 1px solid var(--clay); color: var(--clay); border-radius: 2px;
+    padding: 8px 18px; font-size: 12px; letter-spacing: 0.26em; transform: rotate(-3deg);
+  }
+  .transit p { font-size: 13px; color: var(--ink-faint); margin-top: 14px; letter-spacing: 0.08em; }
+
+  .failed { text-align: center; padding: 20px; font-size: 13px; color: var(--ink-faint); }
+  .failed a { color: var(--clay); cursor: pointer; text-decoration: underline; }
+
+  .empty { font-size: 14px; color: var(--ink-faint); font-style: italic; text-align: center; padding: 36px 0; }
+
+  footer { margin-top: 72px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--ink-faint); letter-spacing: 0.14em; text-align: center; }
+
+  /* ---- auth ---- */
+  #auth-overlay { position: fixed; inset: 0; background: var(--paper); z-index: 99; display: flex; align-items: center; justify-content: center; }
+  .auth-box { width: 320px; text-align: center; }
+  .auth-box .wordmark { font-size: 16px; margin-bottom: 6px; display: block; }
+  .auth-box p { font-size: 13px; color: var(--ink-faint); margin-bottom: 26px; letter-spacing: 0.1em; }
+  .auth-box input { display: block; width: 100%; padding: 11px 14px; margin-bottom: 14px; border: 1px solid var(--rule); border-radius: 4px; background: rgba(255,255,255,0.6); font-family: var(--serif); font-size: 14px; outline: none; }
+  .auth-box input:focus { border-color: var(--clay); }
+  .auth-box button { width: 100%; padding: 11px; background: var(--ink); color: var(--paper); border: none; border-radius: 4px; font-family: var(--serif); font-size: 14px; letter-spacing: 0.12em; cursor: pointer; }
+  .auth-box button:hover { background: var(--clay); }
+  #auth-error { color: var(--clay); font-size: 13px; margin-top: 12px; display: none; }
+
+  @media (max-width: 540px) {
+    header { flex-direction: column; gap: 12px; align-items: center; }
+    nav { gap: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="auth-overlay" style="display:none;">
+  <div class="auth-box">
+    <span class="wordmark">OMBRE<span> ·</span></span>
+    <p>这里只住两个人</p>
+    <input type="password" id="auth-pwd" placeholder="访问密码" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()">进门</button>
+    <div id="auth-error"></div>
+  </div>
+</div>
+
+<div class="page">
+  <header>
+    <div class="wordmark">OMBRE<span> · 深深 &amp; EVAN</span></div>
+    <nav>
+      <a href="/">首页</a>
+      <a href="/letters" class="here">信箱</a>
+      <a href="/dashboard">Ombre</a>
+      <a href="/play">Playroll</a>
+    </nav>
+  </header>
+
+  <div class="page-title">
+    <h1>信箱</h1>
+    <p>慢一点的话，放在这里</p>
+  </div>
+
+  <div class="compose">
+    <label>写给他</label>
+    <textarea id="compose-text" placeholder="想说什么就写什么。他会回的。"></textarea>
+    <div class="row">
+      <span class="hint" id="compose-hint">回信通常几分钟后送达</span>
+      <button id="send-btn" onclick="sendLetter()">寄出</button>
+    </div>
+  </div>
+
+  <div class="thread-label">Correspondence<span class="zh">往来</span></div>
+  <div id="thread"><div class="empty">正在开信箱……</div></div>
+
+  <footer>SINCE 2026.02.28 · OMBRE.MININICOLE.COM</footer>
+</div>
+
+<script>
+let pollTimer = null;
+
+function esc(s) {
+  const div = document.createElement('div');
+  div.textContent = s || '';
+  return div.innerHTML;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  const t = new Date(iso);
+  if (isNaN(t)) return '';
+  return t.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+async function loadLetters() {
+  const box = document.getElementById('thread');
+  try {
+    const r = await fetch('/api/letters');
+    if (r.status === 401) { showAuth(); return; }
+    const data = await r.json();
+    const letters = (data.letters || []).slice().reverse(); // 最新在上
+    if (!letters.length) {
+      box.innerHTML = '<div class="empty">信箱还是空的。第一封信由你来写。</div>';
+      return;
+    }
+    let anyTransit = false;
+    box.innerHTML = letters.map(l => {
+      if (l.in_transit) {
+        anyTransit = true;
+        return `<div class="letter evan"><div class="transit">
+          <div class="stamp">EN ROUTE</div>
+          <p>他回了一封信，正在路上。</p>
+        </div></div>`;
+      }
+      if (l.from === 'shenshen' && l.reply_error && !l.replied) {
+        return letterCard(l, '深深') + `<div class="failed">这封的回信在路上丢了。<a onclick="resend('${l.id}')">让他重写一封</a></div>`;
+      }
+      return letterCard(l, l.from === 'evan' ? 'Evan' : '深深');
+    }).join('');
+    // 有在途的信就保持轮询
+    if (anyTransit && !pollTimer) {
+      pollTimer = setInterval(loadLetters, 30000);
+    } else if (!anyTransit && pollTimer) {
+      clearInterval(pollTimer); pollTimer = null;
+    }
+  } catch (e) {
+    box.innerHTML = '<div class="empty">信箱卡住了，刷新试试。</div>';
+  }
+}
+
+function letterCard(l, who) {
+  return `<div class="letter ${l.from === 'evan' ? 'evan' : ''}">
+    <div class="head"><span class="from">${who}</span><span>${fmtTime(l.created)}</span></div>
+    <div class="body">${esc(l.content)}</div>
+  </div>`;
+}
+
+async function resend(letterId) {
+  // 重寄 = 把原信内容再 POST 一次
+  try {
+    const r = await fetch('/api/letters');
+    const data = await r.json();
+    const orig = (data.letters || []).find(l => l.id === letterId);
+    if (!orig) return;
+    await fetch('/api/letters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: orig.content }) });
+    loadLetters();
+  } catch {}
+}
+
+async function sendLetter() {
+  const ta = document.getElementById('compose-text');
+  const btn = document.getElementById('send-btn');
+  const hint = document.getElementById('compose-hint');
+  const content = ta.value.trim();
+  if (!content) { hint.textContent = '空信封他会笑你的'; return; }
+  btn.disabled = true; hint.textContent = '正在投递……';
+  try {
+    const r = await fetch('/api/letters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+    if (r.status === 401) { showAuth(); btn.disabled = false; return; }
+    if (r.ok) {
+      ta.value = '';
+      hint.textContent = '寄出了。他读到就会回。';
+      loadLetters();
+      if (!pollTimer) pollTimer = setInterval(loadLetters, 30000);
+    } else {
+      const d = await r.json();
+      hint.textContent = d.error || '没寄出去，再试一次';
+    }
+  } catch {
+    hint.textContent = '没寄出去，再试一次';
+  }
+  btn.disabled = false;
+}
+
+function showAuth() { document.getElementById('auth-overlay').style.display = 'flex'; }
+
+async function doLogin() {
+  const pwd = document.getElementById('auth-pwd').value;
+  const r = await fetch('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pwd }) });
+  if (r.ok) {
+    document.getElementById('auth-overlay').style.display = 'none';
+    loadLetters();
+  } else {
+    const el = document.getElementById('auth-error');
+    el.textContent = '不对。再想想。';
+    el.style.display = 'block';
+  }
+}
+
+async function init() {
+  try {
+    const r = await fetch('/auth/status');
+    const s = await r.json();
+    if (!s.authenticated) { showAuth(); return; }
+  } catch {}
+  loadLetters();
+}
+init();
+</script>
+</body>
+</html>

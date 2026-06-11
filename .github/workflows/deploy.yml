@@ -16,6 +16,9 @@ on:
       - 'config.yaml'
       - 'requirements.txt'
       - 'dashboard.html'
+      - 'home.html'
+      - 'letters.html'
+      - 'play/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
