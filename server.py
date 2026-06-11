@@ -2468,13 +2468,24 @@ async def api_musings(request):
         except Exception:
             pass
         state = _json_lib.loads(content)
-        musings = [
+        # 只露最近 7 天的碎碎念——trigger_history 存 20 条，能翻出几周前的老黄历。
+        # 他这几天太安静的话，保底给最新 3 条，别让卡片空着。
+        all_musings = [
             {
                 "content": (m.get("content") or "").replace("[语音]", "").strip(),
                 "timestamp": m.get("timestamp", ""),
             }
-            for m in state.get("trigger_history", [])[-12:]
+            for m in state.get("trigger_history", [])
         ]
+        cutoff = _cn_now() - _td(days=7)
+        recent = []
+        for m in all_musings:
+            try:
+                if _dt.fromisoformat(m["timestamp"]) >= cutoff:
+                    recent.append(m)
+            except Exception:
+                pass
+        musings = recent[-12:] if len(recent) >= 3 else all_musings[-3:]
         musings.reverse()
         # 今日互动：tg_history_evan 里今天（东八区）的消息条数，两个人的都算
         today_interactions = 0
