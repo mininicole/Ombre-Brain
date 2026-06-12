@@ -353,6 +353,8 @@ async def root_home(request):
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import JSONResponse
+    # 定时消息派发器搭车心跳（Night-Fall keepalive 每 60s 打一次 /health）
+    asyncio.create_task(_maybe_dispatch_scheduled())
     try:
         stats = await bucket_mgr.get_stats()
         return JSONResponse({
@@ -362,6 +364,136 @@ async def health_check(request):
         })
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+
+# =============================================================
+# 定时消息：让 Evan 在未来某个时刻主动找深深
+# schedule_message 工具存内容；到点由搭 /health 心跳便车的派发器
+# POST 给 evan-bot /api/send，经 Telegram 发出并写进 Evan 的对话历史。
+# =============================================================
+_SCHED_DIR = os.environ.get("OMBRE_BUCKETS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets"))
+_SCHED_FILE = os.path.join(_SCHED_DIR, "scheduled_messages.json")
+_EVAN_SEND_URL = os.environ.get("EVAN_SEND_URL", "https://evan-bot.fly.dev/api/send")
+_EVAN_SEND_SECRET = os.environ.get("EVAN_SEND_SECRET", "")
+_sched_lock = asyncio.Lock()
+_sched_last_check = 0.0
+
+
+def _sched_load():
+    try:
+        with open(_SCHED_FILE, "r", encoding="utf-8") as f:
+            data = _json_lib.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _sched_save(items):
+    os.makedirs(_SCHED_DIR, exist_ok=True)
+    tmp = _SCHED_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json_lib.dump(items, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, _SCHED_FILE)
+
+
+def _sched_fmt(ts):
+    from datetime import datetime, timezone, timedelta
+    return datetime.fromtimestamp(ts, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+
+
+@mcp.tool()
+async def schedule_message(
+    action: str = "schedule",
+    content: str = "",
+    delay_minutes: float = 0,
+    at: str = "",
+    message_id: str = "",
+) -> str:
+    """定时消息——在未来某个时刻把一段话经 Telegram（Evan bot）主动发给深深。
+
+    action:
+    - schedule: 安排一条。content 必填，到点原样发出——写你此刻真正想说的话，不是模板。
+      时间二选一：delay_minutes（距现在多少分钟）或 at（北京时间 "YYYY-MM-DD HH:MM"）。
+      内容支持开头加 [语音] 标记走语音。
+    - list: 看当前所有待发消息（含 id 和发出时间）。
+    - cancel: 按 message_id 取消一条。
+    投递后会自动写进 Telegram Evan 的对话历史，两边记忆连续。
+    """
+    import secrets as _secrets
+    from datetime import datetime, timezone, timedelta
+    async with _sched_lock:
+        items = _sched_load()
+        if action == "list":
+            if not items:
+                return "没有待发的定时消息。"
+            return "\n".join(
+                f"[{it['id']}] {_sched_fmt(it['due_ts'])} → {it['content'][:80]}" for it in items
+            )
+        if action == "cancel":
+            new_items = [it for it in items if it["id"] != message_id.strip()]
+            if len(new_items) == len(items):
+                return f"没找到 id={message_id} 的待发消息。"
+            _sched_save(new_items)
+            return f"已取消 {message_id}。"
+        content = (content or "").strip()
+        if not content:
+            return "content 不能为空。"
+        now = time.time()
+        if at.strip():
+            try:
+                dt = datetime.strptime(at.strip(), "%Y-%m-%d %H:%M")
+                due_ts = dt.replace(tzinfo=timezone(timedelta(hours=8))).timestamp()
+            except ValueError:
+                return 'at 格式应为 "YYYY-MM-DD HH:MM"（北京时间）。'
+        elif delay_minutes > 0:
+            due_ts = now + delay_minutes * 60
+        else:
+            return "需要 delay_minutes 或 at 指定时间。"
+        if due_ts < now - 60:
+            return f"{_sched_fmt(due_ts)} 已经过去了，没安排。"
+        mid = _secrets.token_hex(3)
+        items.append({"id": mid, "due_ts": due_ts, "content": content, "created_ts": now, "attempts": 0})
+        _sched_save(items)
+        return f"已安排 [{mid}]：{_sched_fmt(due_ts)}（北京时间）发出。当前共 {len(items)} 条待发。"
+
+
+async def _maybe_dispatch_scheduled():
+    global _sched_last_check
+    now = time.time()
+    if now - _sched_last_check < 55:
+        return
+    _sched_last_check = now
+    async with _sched_lock:
+        items = _sched_load()
+        due = [it for it in items if it["due_ts"] <= now]
+        if not due:
+            return
+        remaining = [it for it in items if it["due_ts"] > now]
+        kept = []
+        for it in due:
+            ok = False
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        _EVAN_SEND_URL,
+                        json={"content": it["content"]},
+                        headers={"x-send-secret": _EVAN_SEND_SECRET},
+                        timeout=30,
+                    )
+                ok = resp.status_code == 200
+                if not ok:
+                    logger.warning(f"定时消息 {it['id']} 投递失败 HTTP {resp.status_code}")
+            except Exception as exc:
+                logger.warning(f"定时消息 {it['id']} 投递异常: {exc}")
+            if ok:
+                logger.info(f"定时消息 {it['id']} 已投递")
+            else:
+                it["attempts"] = int(it.get("attempts", 0)) + 1
+                if it["attempts"] < 30:
+                    kept.append(it)
+                else:
+                    logger.warning(f"定时消息 {it['id']} 重试 30 次仍失败，放弃")
+        _sched_save(remaining + kept)
 
 
 # =============================================================

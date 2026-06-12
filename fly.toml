@@ -19,11 +19,11 @@ primary_region = 'nrt'
 [http_service]
   internal_port = 8000
   force_https = true
-  # 挂起模式：闲时 suspend 到内存快照，请求进来时 ~300ms 唤醒（几乎无感）
-  # 不用 stop：那是冷启动 5-15s，会让 MCP 首次调用超时
-  auto_stop_machines = 'suspend'
+  # 常驻模式（2026-06-12 起）：夜间自动做梦（19 UTC）和定时消息派发
+  # 都依赖进程活着——suspend 状态下两者都不会发生，所以不再闲时挂起
+  auto_stop_machines = 'off'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   # ⚠️ 这个 health check 必须保留。它有两个作用：
   # 1. fly proxy 的 readiness probe — 看到 /health 200 才把外部流量转给 machine

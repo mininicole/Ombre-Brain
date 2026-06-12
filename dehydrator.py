@@ -384,9 +384,33 @@ class Dehydrator:
             if metadata.get("digested"):
                 header += " [已消化]"
             header += "\n"
-        
+
         content = re.sub(r'\[\[([^\]]+)\]\]', r'\1', content)
-        return f"{header}{content}"
+        body = f"{header}{content}"
+
+        # --- 年轮 (comments) — show as layered re-readings ---
+        # --- 年轮 (comments) —— 同一条记忆历次重读的感受 ---
+        comments = metadata.get("comments", []) if metadata else []
+        if isinstance(comments, list) and comments:
+            ring_lines = [f"\n[年轮 {len(comments)}]"]
+            for c in comments:
+                if not isinstance(c, dict):
+                    continue
+                created = (str(c.get("created", "")) or "")[:10]  # YYYY-MM-DD
+                author = c.get("author", "")
+                cv = c.get("valence")
+                affect = ""
+                try:
+                    if cv is not None:
+                        affect = f"(V{float(cv):.1f})"
+                except (ValueError, TypeError):
+                    pass
+                ctext = str(c.get("content", "")).strip()
+                if ctext:
+                    ring_lines.append(f"└ {created} {author}{affect}: {ctext}")
+            if len(ring_lines) > 1:
+                body += "\n" + "\n".join(ring_lines)
+        return body
 
     # ---------------------------------------------------------
     # Auto-tagging: analyze content for domain + emotion + tags
