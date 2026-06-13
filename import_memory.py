@@ -435,12 +435,15 @@ class ImportEngine:
             source_hash = hashlib.sha256(raw_content.encode()).hexdigest()[:16]
 
             # Check for resume
+            # preserve_raw 模式：用更小的 chunk（默认 10k token 整段入桶太大没法读）
+            chunk_tokens = 1500 if preserve_raw else 10000
+
             if resume and self.state.load() and self.state.can_resume:
                 if self.state.data["source_hash"] == source_hash:
                     logger.info(f"Resuming import from chunk {self.state.data['processed']}/{self.state.data['total_chunks']}")
                     # Re-parse and re-chunk to get the same chunks
                     turns = detect_and_parse(raw_content, filename)
-                    self._chunks = chunk_turns(turns)
+                    self._chunks = chunk_turns(turns, target_tokens=chunk_tokens)
                     self.state.data["status"] = "running"
                     self.state.save()
                     return await self._process_chunks(preserve_raw)
@@ -453,7 +456,7 @@ class ImportEngine:
                 self._running = False
                 return {"error": "No conversation turns found in file"}
 
-            self._chunks = chunk_turns(turns)
+            self._chunks = chunk_turns(turns, target_tokens=chunk_tokens)
             if not self._chunks:
                 self._running = False
                 return {"error": "No processable chunks after splitting"}
@@ -506,6 +509,33 @@ class ImportEngine:
         """Extract memories from a single chunk and store them."""
         content = chunk["content"]
         if not content.strip():
+            return
+
+        # --- preserve_raw 全局模式：跳过 LLM 评判，整 chunk 原样入桶 ---
+        # 用户勾选此模式意图是"别帮我筛"——LLM 的"无意义寒暄/<30字/不值得"过滤
+        # 会丢掉她想存的暗号、短句、特殊瞬间。直接把这段对话作为一条桶。
+        if preserve_raw:
+            try:
+                snippet = content.strip().splitlines()[0] if content.strip() else "导入片段"
+                name = snippet[:20] if snippet else "导入片段"
+                bucket_id = await self.bucket_mgr.create(
+                    content=content,
+                    tags=[],
+                    importance=7,
+                    domain=["未分类"],
+                    valence=0.5,
+                    arousal=0.3,
+                    name=name,
+                )
+                if self.embedding_engine:
+                    try:
+                        await self.embedding_engine.generate_and_store(bucket_id, content)
+                    except Exception:
+                        pass
+                self.state.data["memories_raw"] += 1
+                self.state.data["memories_created"] += 1
+            except Exception as e:
+                logger.warning(f"preserve_raw direct create failed: {e}")
             return
 
         # --- LLM extraction ---
