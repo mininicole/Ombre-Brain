@@ -1230,9 +1230,12 @@ async function loadBuckets() {
       throw new Error((data && data.error) ? data.error : `HTTP ${res.status}`);
     }
     allBuckets = data;
+    // URL ?domain=tg-private | tg-gale 预设视角（Evan / Gale 视图分流）
+    var _domainParam = new URLSearchParams(window.location.search).get('domain');
+    if (_domainParam) currentFilter = 'domain:' + _domainParam;
     updateStats();
     buildFilters();
-    renderBuckets(allBuckets);
+    renderBuckets(filterBuckets(allBuckets));
   } catch (e) {
     document.getElementById('bucket-list').innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
   }
@@ -1261,9 +1264,9 @@ function buildFilters() {
     { key: 'archived', label: '📦 归档' },
   ];
   filters.innerHTML = types.map(function(t) {
-    return '<button class="filter-btn ' + (t.key === 'all' ? 'active' : '') + '" data-filter="' + t.key + '">' + t.label + '</button>';
+    return '<button class="filter-btn ' + (t.key === currentFilter ? 'active' : '') + '" data-filter="' + t.key + '">' + t.label + '</button>';
   }).join('') + Array.from(domains).slice(0, 10).map(function(d) {
-    return '<button class="filter-btn" data-filter="domain:' + d + '">' + d + '</button>';
+    return '<button class="filter-btn ' + ('domain:' + d === currentFilter ? 'active' : '') + '" data-filter="domain:' + d + '">' + d + '</button>';
   }).join('');
 
   filters.addEventListener('click', function(e) {

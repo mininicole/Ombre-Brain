@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir git+https://github.com/mininicole/Night-Fall.git
 
 # Copy project files / 复制项目文件
 COPY *.py .
-COPY dashboard.html home.html letters.html .
+COPY dashboard.html home.html letters.html choose.html .
 COPY play/ ./play/
 # 用 example 作为 baseline；运行时关键参数（model / base_url / API key）
 # 全靠 fly env vars 覆盖（dehydration / embedding / Night-Fall）。

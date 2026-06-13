@@ -1917,6 +1917,19 @@ async def api_breath_debug(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/choose", methods=["GET"])
+async def choose(request):
+    """视角选择页：Evan / Gale 分流入口，跳到带 ?domain= 的 dashboard。"""
+    from starlette.responses import HTMLResponse
+    import os
+    choose_path = os.path.join(os.path.dirname(__file__), "choose.html")
+    try:
+        with open(choose_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>choose.html not found</h1>", status_code=404)
+
+
 @mcp.custom_route("/dashboard", methods=["GET"])
 async def dashboard(request):
     """Serve the dashboard HTML page."""

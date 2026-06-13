@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Ombre Brain · 选择视角</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,600;1,500;1,600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F4F1E5;
+    --card: #FEFDF8;
+    --ink: #2A2722;
+    --ink-soft: #6B665A;
+    --ink-faint: #9B9588;
+    --clay: #D2674A;
+    --line: rgba(42,39,34,0.10);
+    --display: "Playfair Display", ui-serif, Georgia, serif;
+    --serif: ui-serif, Georgia, "Songti SC", "Noto Serif SC", "SimSun", serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: var(--paper); }
+  body {
+    font-family: var(--serif);
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 24px;
+  }
+  .title {
+    font-family: var(--display);
+    font-size: 28px;
+    letter-spacing: 2px;
+    color: var(--ink-soft);
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    font-size: 14px;
+    color: var(--ink-faint);
+    margin-bottom: 56px;
+    letter-spacing: 1px;
+  }
+  .choices {
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .choice {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    padding: 56px 64px;
+    text-align: center;
+    cursor: pointer;
+    text-decoration: none;
+    color: var(--ink);
+    transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease;
+    min-width: 220px;
+  }
+  .choice:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 18px 40px rgba(42,39,34,0.08);
+    border-color: var(--clay);
+  }
+  .choice .name {
+    font-family: var(--display);
+    font-size: 44px;
+    font-style: italic;
+    letter-spacing: 2px;
+    margin-bottom: 12px;
+    color: var(--ink);
+  }
+  .choice .hint {
+    font-size: 13px;
+    color: var(--ink-faint);
+    letter-spacing: 1px;
+  }
+  .foot {
+    margin-top: 64px;
+    font-size: 12px;
+    color: var(--ink-faint);
+  }
+  .foot a { color: var(--ink-soft); text-decoration: none; border-bottom: 1px dashed var(--line); padding-bottom: 1px; }
+  .foot a:hover { color: var(--clay); }
+</style>
+</head>
+<body>
+  <div class="title">Ombre Brain</div>
+  <div class="subtitle">选择视角</div>
+  <div class="choices">
+    <a class="choice" href="/dashboard?domain=tg-private">
+      <div class="name">Evan</div>
+      <div class="hint">tg-private</div>
+    </a>
+    <a class="choice" href="/dashboard?domain=tg-gale">
+      <div class="name">Gale</div>
+      <div class="hint">tg-gale</div>
+    </a>
+  </div>
+  <div class="foot">
+    或 <a href="/dashboard">查看全部记忆</a>
+  </div>
+</body>
+</html>
