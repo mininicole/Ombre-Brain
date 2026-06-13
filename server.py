@@ -457,6 +457,29 @@ async def schedule_message(
         return f"已安排 [{mid}]：{_sched_fmt(due_ts)}（北京时间）发出。当前共 {len(items)} 条待发。"
 
 
+# REST 包装：给 TG Evan 用。MCP 客户端用 schedule_message 工具；
+# evan-bot 抓到 <schedule> tag 时 POST 这里。
+@mcp.custom_route("/api/schedule_message", methods=["POST"])
+async def api_schedule_message(request):
+    from starlette.responses import JSONResponse
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    content = str(body.get("content") or "").strip()
+    if not content:
+        return JSONResponse({"error": "content empty"}, status_code=400)
+    at = str(body.get("at") or "").strip()
+    delay_minutes = float(body.get("delay_minutes") or 0)
+    result = await schedule_message(
+        action="schedule",
+        content=content,
+        delay_minutes=delay_minutes,
+        at=at,
+    )
+    return JSONResponse({"result": result})
+
+
 async def _maybe_dispatch_scheduled():
     global _sched_last_check
     now = time.time()
