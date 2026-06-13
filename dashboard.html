@@ -837,6 +837,15 @@
     <div style="margin:12px 0;">
       <label><input type="checkbox" id="import-preserve-raw" /> 保留原文模式（特殊情境/暗号/仪式性内容不摘要）</label>
     </div>
+    <div style="margin:12px 0;">
+      <label>归入井：
+        <select id="import-domain" style="margin-left:8px;padding:4px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);">
+          <option value="">默认（按 LLM 自动判定）</option>
+          <option value="tg-private">Evan（tg-private）</option>
+          <option value="tg-gale">Gale（tg-gale）</option>
+        </select>
+      </label>
+    </div>
 
     <div id="import-progress" style="display:none;margin:20px 0;">
       <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
@@ -2080,10 +2089,13 @@ fileInput.addEventListener('change', () => { if (fileInput.files.length) startIm
 
 async function startImport(file) {
   const preserveRaw = document.getElementById('import-preserve-raw').checked;
+  const forceDomain = document.getElementById('import-domain').value;
   const fd = new FormData();
   fd.append('file', file);
   try {
-    const res = await fetch(BASE + '/api/import/upload?preserve_raw=' + (preserveRaw ? '1' : '0'), { method: 'POST', body: fd });
+    var qs = '/api/import/upload?preserve_raw=' + (preserveRaw ? '1' : '0');
+    if (forceDomain) qs += '&domain=' + encodeURIComponent(forceDomain);
+    const res = await fetch(BASE + qs, { method: 'POST', body: fd });
     const data = await res.json();
     if (data.error) { alert('导入失败: ' + data.error); return; }
     document.getElementById('import-progress').style.display = '';

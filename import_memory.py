@@ -420,6 +420,7 @@ class ImportEngine:
         filename: str = "",
         preserve_raw: bool = False,
         resume: bool = False,
+        force_domain: str = None,
     ) -> dict:
         """
         Start or resume an import.
@@ -446,7 +447,7 @@ class ImportEngine:
                     self._chunks = chunk_turns(turns, target_tokens=chunk_tokens)
                     self.state.data["status"] = "running"
                     self.state.save()
-                    return await self._process_chunks(preserve_raw)
+                    return await self._process_chunks(preserve_raw, force_domain=force_domain)
                 else:
                     logger.warning("Source file changed, starting fresh import")
 
@@ -464,8 +465,8 @@ class ImportEngine:
             self.state.reset(filename, source_hash, len(self._chunks))
             self.state.save()
 
-            logger.info(f"Starting import: {len(turns)} turns → {len(self._chunks)} chunks")
-            return await self._process_chunks(preserve_raw)
+            logger.info(f"Starting import: {len(turns)} turns → {len(self._chunks)} chunks (force_domain={force_domain or 'none'})")
+            return await self._process_chunks(preserve_raw, force_domain=force_domain)
 
         except Exception as e:
             self.state.data["status"] = "error"
@@ -474,7 +475,7 @@ class ImportEngine:
             self._running = False
             raise
 
-    async def _process_chunks(self, preserve_raw: bool) -> dict:
+    async def _process_chunks(self, preserve_raw: bool, force_domain: str = None) -> dict:
         """Process chunks from current position."""
         start_idx = self.state.data["processed"]
 
@@ -488,7 +489,7 @@ class ImportEngine:
 
             chunk = self._chunks[i]
             try:
-                await self._process_single_chunk(chunk, preserve_raw)
+                await self._process_single_chunk(chunk, preserve_raw, force_domain=force_domain)
             except Exception as e:
                 err_msg = f"Chunk {i}: {str(e)[:200]}"
                 logger.warning(f"Import chunk error: {err_msg}")
@@ -505,7 +506,7 @@ class ImportEngine:
         logger.info(f"Import completed: {self.state.data['memories_created']} created, {self.state.data['memories_merged']} merged")
         return self.state.to_dict()
 
-    async def _process_single_chunk(self, chunk: dict, preserve_raw: bool):
+    async def _process_single_chunk(self, chunk: dict, preserve_raw: bool, force_domain: str = None):
         """Extract memories from a single chunk and store them."""
         content = chunk["content"]
         if not content.strip():
@@ -522,7 +523,7 @@ class ImportEngine:
                     content=content,
                     tags=[],
                     importance=7,
-                    domain=["未分类"],
+                    domain=[force_domain] if force_domain else ["未分类"],
                     valence=0.5,
                     arousal=0.3,
                     name=name,
@@ -553,6 +554,10 @@ class ImportEngine:
         # --- Store each extracted memory ---
         for item in items:
             try:
+                # force_domain 强制覆盖：UI 选了 Evan/Gale 就归到该井，无视 LLM 判断
+                if force_domain:
+                    item["domain"] = [force_domain]
+
                 should_preserve = preserve_raw or item.get("preserve_raw", False)
 
                 if should_preserve:
