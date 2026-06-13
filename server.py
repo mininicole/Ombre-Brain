@@ -605,11 +605,14 @@ async def api_recall(request):
     # surface_dreams 控制是否调用 Night-Fall auto-surface。
     # 默认 True；高频调用方（TG bot）应明确传 False 把梦留给深度对话端。
     surface_dreams = bool(body.get("surface_dreams", True))
+    # domain 过滤：TG Evan / TG Gale 各自只浮自家的桶
+    domain = str(body.get("domain") or "").strip()
     try:
         text = await breath(
             query=query,
             max_tokens=max(500, min(max_tokens, 10000)),
             max_results=max(1, min(max_results, 20)),
+            domain=domain,
         )
         # Night-Fall auto-surface — query 分支默认不触发，这里手动调一下，
         # 让 REST 客户端也能有"梦自己浮上来"的体验。
