@@ -605,8 +605,9 @@ async def api_recall(request):
     # surface_dreams 控制是否调用 Night-Fall auto-surface。
     # 默认 True；高频调用方（TG bot）应明确传 False 把梦留给深度对话端。
     surface_dreams = bool(body.get("surface_dreams", True))
-    # domain 过滤：TG Evan / TG Gale 各自只浮自家的桶
+    # domain 过滤：TG Evan / TG Gale 各自只浮自家的桶；多租户场景必须严格隔离
     domain = str(body.get("domain") or "").strip()
+    strict_domain = bool(body.get("strict_domain", bool(domain)))
     try:
         text = await breath(
             query=query,
@@ -1064,6 +1065,8 @@ async def breath(
             domain_filter=domain_filter,
             query_valence=q_valence,
             query_arousal=q_arousal,
+            # domain 传入即隔离意图，不让回退把别 bot 的桶泄漏
+            strict_domain=domain_filter is not None,
         )
     except Exception as e:
         logger.error(f"Search failed / 检索失败: {e}")

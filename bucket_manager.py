@@ -531,12 +531,15 @@ class BucketManager:
         domain_filter: list[str] = None,
         query_valence: float = None,
         query_arousal: float = None,
+        strict_domain: bool = False,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
         多维索引搜索记忆桶。
 
         domain_filter: pre-filter by domain (None = search all)
+        strict_domain: 多租户隔离时必传 True——domain 过滤为空就返回空，
+                       不要回退到全库（否则跨 bot 的桶会泄漏）
         query_valence/arousal: emotion coordinates for resonance scoring
         """
         if not query or not query.strip():
@@ -557,8 +560,8 @@ class BucketManager:
                 if {d.lower() for d in b["metadata"].get("domain", [])} & filter_set
             ]
             # Fall back to full search if pre-filter yields nothing
-            # 预筛为空则回退全量搜索
-            if not candidates:
+            # 预筛为空则回退全量搜索（多租户场景调用方应传 strict_domain=True 关掉）
+            if not candidates and not strict_domain:
                 candidates = all_buckets
         else:
             candidates = all_buckets
