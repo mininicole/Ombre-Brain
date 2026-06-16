@@ -1060,8 +1060,10 @@ async def breath(
 
     # --- Pinned buckets always surface in search mode too ---
     # 1077 行排除 pinned 时假设浮现模式能补回来，但 /api/recall 永远走 query 分支，
-    # 钉桶就再也出不来。这里独立加载：tg-* 绑域的钉桶严格按 domain 隔离，
-    # 没绑 tg-* 的视为全局桶对所有 domain 可见。不计入 max_tokens 预算（与浮现模式一致）。
+    # 钉桶就再也出不来。这里独立加载并严格按 domain 隔离：
+    # 调用方传 domain 时，钉桶 metadata.domain 必须跟它有交集才可见——
+    # 绝不"默认全局可见"，否则历史上没标隔离 tag 的 Evan 私聊钉桶会泄漏给 Gale。
+    # 不计入 max_tokens 预算（与浮现模式一致）。
     pinned_results = []
     try:
         all_buckets_for_pinned = await bucket_mgr.list_all(include_archive=False)
@@ -1073,10 +1075,8 @@ async def breath(
             bucket_doms = meta.get("domain") or []
             if isinstance(bucket_doms, str):
                 bucket_doms = [bucket_doms]
-            if target_set:
-                has_tg_scope = any(str(d).startswith("tg-") for d in bucket_doms)
-                if has_tg_scope and not (set(bucket_doms) & target_set):
-                    continue
+            if target_set and not (set(bucket_doms) & target_set):
+                continue
             try:
                 clean_meta = {k: v for k, v in meta.items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
