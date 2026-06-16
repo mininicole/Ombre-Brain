@@ -1058,6 +1058,35 @@ async def breath(
     q_valence = valence if 0 <= valence <= 1 else None
     q_arousal = arousal if 0 <= arousal <= 1 else None
 
+    # --- Pinned buckets always surface in search mode too ---
+    # 1077 行排除 pinned 时假设浮现模式能补回来，但 /api/recall 永远走 query 分支，
+    # 钉桶就再也出不来。这里独立加载：tg-* 绑域的钉桶严格按 domain 隔离，
+    # 没绑 tg-* 的视为全局桶对所有 domain 可见。不计入 max_tokens 预算（与浮现模式一致）。
+    pinned_results = []
+    try:
+        all_buckets_for_pinned = await bucket_mgr.list_all(include_archive=False)
+        target_set = set(domain_filter) if domain_filter else set()
+        for b in all_buckets_for_pinned:
+            meta = b["metadata"]
+            if not (meta.get("pinned") or meta.get("protected")):
+                continue
+            bucket_doms = meta.get("domain") or []
+            if isinstance(bucket_doms, str):
+                bucket_doms = [bucket_doms]
+            if target_set:
+                has_tg_scope = any(str(d).startswith("tg-") for d in bucket_doms)
+                if has_tg_scope and not (set(bucket_doms) & target_set):
+                    continue
+            try:
+                clean_meta = {k: v for k, v in meta.items() if k != "tags"}
+                summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                pinned_results.append(f"📌 [核心准则] [bucket_id:{b['id']}] {summary}")
+            except Exception as e:
+                logger.warning(f"search 模式钉选桶脱水失败: {e}")
+                continue
+    except Exception as e:
+        logger.warning(f"search 模式列钉桶失败: {e}")
+
     try:
         matches = await bucket_mgr.search(
             query,
@@ -1142,12 +1171,17 @@ async def breath(
         except Exception as e:
             logger.warning(f"Random surfacing failed / 随机浮现失败: {e}")
 
-    if not results:
+    if not results and not pinned_results:
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})
         return "未找到相关记忆。"
 
-    final_text = "\n---\n".join(results)
-    await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "chars": len(final_text)})
+    final_parts = []
+    if pinned_results:
+        final_parts.append("=== 核心准则 ===\n" + "\n---\n".join(pinned_results))
+    if results:
+        final_parts.append("\n---\n".join(results))
+    final_text = "\n\n".join(final_parts)
+    await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "chars": len(final_text), "pinned": len(pinned_results)})
     return final_text
 
 
