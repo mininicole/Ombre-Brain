@@ -18,6 +18,7 @@ on:
       - 'dashboard.html'
       - 'home.html'
       - 'letters.html'
+      - 'evan.html'
       - 'play/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
