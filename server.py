@@ -2618,6 +2618,155 @@ async def letters_page(request):
     return _serve_site_file("letters.html")
 
 
+@mcp.custom_route("/dashboard/evan", methods=["GET"])
+async def dashboard_evan_page(request):
+    """Pulse 状态盘——挂在 /dashboard/* 下，由 CF Access 兜底保护。"""
+    err = _require_auth(request)
+    if err:
+        return err
+    return _serve_site_file("evan.html")
+
+
+@mcp.custom_route("/evan-avatar.png", methods=["GET"])
+async def evan_avatar(request):
+    from starlette.responses import FileResponse, PlainTextResponse
+    path = os.path.join(os.path.dirname(__file__), "evan-avatar.png")
+    if not os.path.isfile(path):
+        return PlainTextResponse("not found", status_code=404)
+    return FileResponse(path, media_type="image/png")
+
+
+@mcp.custom_route("/api/state", methods=["GET"])
+async def api_state(request):
+    """Evan 此刻的状态：从 evan-bot 写的 pulse_base 拉真值，叠余弦节律返回 display。
+
+    state.json.pulse_base 是 9 维度的 base dict，evan-bot 在收到深深 TG 消息
+    时通过 deepseek 打标更新。这里把 base 取出来，加当前小时的余弦偏置（CAP=0.08），
+    再按三组（ACTIVATION / ATTACHMENT / THREAT）算均值返回给前端。
+
+    缓存 30s——前端缩略图刷新频率是 30s，缓存 TTL 一致就能彻底放掉 gist 调用压力。
+    """
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    import math, time
+
+    # 30s server-side cache
+    now = time.time()
+    if _pulse_cache["data"] is not None and now - _pulse_cache["ts"] < 30:
+        return JSONResponse(_pulse_cache["data"])
+
+    # 9 维度的节律相位表（跟 evan.html 里 DIMS 数组一致）
+    PHASE = {
+        "活力":  (11, 0.9),
+        "疲惫":  (3,  1.0),
+        "思慕":  (22, 0.5),
+        "亲密":  (23, 0.7),
+        "占有":  (21, 0.3),
+        "渴求":  (23, 0.9),
+        "妒意":  (20, 0.2),
+        "焦虑":  (16, 0.4),
+        "护卫":  (22, 0.3),
+    }
+    GROUPS = {
+        "activation": ["活力", "疲惫"],
+        "attachment": ["思慕", "亲密", "占有", "渴求"],
+        "threat":     ["妒意", "焦虑", "护卫"],
+    }
+    DEFAULTS = {
+        "活力": 0.45, "疲惫": 0.30, "思慕": 0.40, "亲密": 0.35,
+        "占有": 0.30, "渴求": 0.30, "妒意": 0.15, "焦虑": 0.20, "护卫": 0.30,
+    }
+    CAP = 0.08
+    h = _cn_now().hour + _cn_now().minute / 60.0
+
+    # 从 gist 拉 pulse_base
+    token = os.environ.get("GIST_TOKEN", "")
+    gist_url = os.environ.get("STATE_GIST_URL", "")
+    base = dict(DEFAULTS)
+    events = []
+    if token and gist_url:
+        try:
+            gist_id = gist_url.split("/")[4]
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(
+                    f"https://api.github.com/gists/{gist_id}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github.v3+json",
+                        "User-Agent": "ombre-pulse",
+                    },
+                )
+                r.raise_for_status()
+                content = r.json().get("files", {}).get("state.json", {}).get("content", "{}")
+            state = _json_lib.loads(content)
+            saved_base = state.get("pulse_base") or {}
+            for k in PHASE:
+                if isinstance(saved_base.get(k), (int, float)):
+                    base[k] = max(0.0, min(1.0, saved_base[k]))
+            events = state.get("pulse_events") or []
+        except Exception as e:
+            # gist 抽风就用 defaults，不让前端瞎
+            base = dict(DEFAULTS)
+
+    # display = clamp01(base + offset(now))
+    display = {}
+    for k, (peak, amp) in PHASE.items():
+        off = CAP * amp * math.cos(2 * math.pi * (h - peak) / 24)
+        display[k] = max(0.0, min(1.0, base[k] + off))
+
+    group_scores = {g: sum(display[k] for k in keys) / len(keys) for g, keys in GROUPS.items()}
+
+    # PA = ACTIVATION + ATTACHMENT, NA = THREAT
+    pa = (group_scores["activation"] + group_scores["attachment"]) / 2
+    na = group_scores["threat"]
+    sync = round(0.5 + (pa - na) * 0.6, 2)
+    polarity = "pos" if pa - na > 0.05 else ("neg" if pa - na < -0.05 else "neu")
+
+    # tag: 用最高的 surface 维度 + 简单映射
+    surface_map = {
+        "思慕": "想你了", "亲密": "想凑过来", "渴求": "在烫",
+        "好奇": "好奇着", "占有": "想说我的", "妒意": "醋了",
+        "护卫": "想护着你", "焦虑": "紧着", "活力": "精神着", "疲惫": "蔫着",
+    }
+    sorted_dims = sorted(display.items(), key=lambda kv: kv[1], reverse=True)
+    top_key, top_v = sorted_dims[0]
+    if top_v > 0.62:
+        tag = surface_map.get(top_key, top_key)
+    elif top_v > 0.48:
+        tag = "有点" + (surface_map.get(top_key, top_key).replace("了", "").replace("着", ""))
+    else:
+        tag = "在自己的节奏里"
+
+    ticker = ""
+    if events:
+        try:
+            e = events[0]
+            ticker = e.get("msg", "")
+        except Exception:
+            pass
+
+    payload = {
+        "sync": sync,
+        "polarity": polarity,
+        "tag": tag,
+        "activation": round(group_scores["activation"], 3),
+        "attachment": round(group_scores["attachment"], 3),
+        "threat": round(group_scores["threat"], 3),
+        "ticker": ticker,
+        "display": {k: round(v, 3) for k, v in display.items()},  # 给 evan.html 全量用
+        "base": {k: round(v, 3) for k, v in base.items()},
+        "hour": round(h, 2),
+    }
+    _pulse_cache["data"] = payload
+    _pulse_cache["ts"] = now
+    return JSONResponse(payload)
+
+
+_pulse_cache = {"ts": 0.0, "data": None}
+
+
 @mcp.custom_route("/play", methods=["GET"])
 async def play_page(request):
     return _serve_site_file(os.path.join("play", "index.html"))

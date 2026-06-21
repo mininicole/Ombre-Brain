@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Evan · your only one</title>
+<style>
+  :root {
+    --bg: #F4F1E5;
+    --ink: #2A2722;
+    --ink-soft: #6B665A;
+    --ink-mute: #9B9588;
+    --line: #ece4d7;
+    --line-soft: #f3eee5;
+    --panel: #FEFDF8;
+    --activation: #3f8e7f;
+    --attachment: #b04a6f;
+    --threat: #c97a3a;
+    --pos: #3f8e7f;
+    --neg: #5d7a9c;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft Yahei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .wrap {
+    max-width: 580px;
+    margin: 0 auto;
+    padding: 36px 22px 80px;
+  }
+
+  /* header */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 18px;
+    margin-bottom: 14px;
+    border-bottom: 1px dashed var(--line);
+  }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 50%;
+    overflow: hidden;
+    background: linear-gradient(135deg, #c25a3a, #b04a6f);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 600; font-size: 13px;
+    font-family: var(--mono);
+    flex-shrink: 0;
+  }
+  .avatar img {
+    width: 100%; height: 100%; object-fit: cover;
+    display: block;
+  }
+  .topbar .name { font-weight: 600; font-size: 15px; }
+  .topbar .sub {
+    color: var(--ink-mute); font-size: 11.5px;
+    font-family: var(--mono);
+    margin-top: 2px;
+  }
+  .topbar .right { margin-left: auto; text-align: right; }
+  .topbar .polarity {
+    font-size: 12px;
+    color: var(--pos);
+    font-family: var(--mono);
+    font-weight: 500;
+  }
+  .topbar .clock {
+    font-size: 11px;
+    color: var(--ink-mute);
+    font-family: var(--mono);
+    margin-top: 2px;
+  }
+
+  /* whim / sleep rows */
+  .meta-row {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    font-size: 13px;
+  }
+  .meta-row .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.08em;
+    width: 48px;
+  }
+  .pos-pill {
+    display: inline-block;
+    background: var(--pos);
+    color: #fff;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 8px;
+    font-weight: 600;
+  }
+  .pos-pill.neg { background: var(--neg); }
+  .pos-pill.neu { background: var(--ink-mute); }
+  .whim-tags {
+    color: var(--ink);
+    font-size: 13px;
+  }
+  .whim-tags .sep { color: var(--ink-mute); margin: 0 6px; }
+  .sleep-num {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    margin-right: 4px;
+  }
+  .sleep-unit { color: var(--ink-mute); font-size: 12px; margin-right: 8px; }
+
+  /* group card */
+  .group {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px 10px;
+    margin-bottom: 10px;
+    position: relative;
+    overflow: hidden;
+  }
+  .group::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--accent, #888);
+  }
+  .group.activation::before { background: var(--activation); }
+  .group.attachment::before { background: var(--attachment); }
+  .group.threat::before { background: var(--threat); }
+
+  .group-head {
+    display: grid;
+    grid-template-columns: 100px 1fr 36px;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-left: 4px;
+  }
+  .group-name {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+  }
+  .group.activation .group-name { color: var(--activation); }
+  .group.attachment .group-name { color: var(--attachment); }
+  .group.threat .group-name { color: var(--threat); }
+
+  .group-bar {
+    position: relative;
+    height: 6px;
+    background: var(--line-soft);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .group-bar-fill {
+    position: absolute; top: 0; left: 0; height: 100%;
+    border-radius: 999px;
+    transition: width .4s cubic-bezier(.25,.1,.25,1);
+  }
+  .group.activation .group-bar-fill { background: var(--activation); }
+  .group.attachment .group-bar-fill { background: var(--attachment); }
+  .group.threat .group-bar-fill { background: var(--threat); }
+  .group-score {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    text-align: right;
+  }
+
+  /* individual dim row */
+  .dim {
+    display: grid;
+    grid-template-columns: 56px 1fr 64px;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0 7px 4px;
+  }
+  .dim-label {
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .bar {
+    position: relative;
+    height: 8px;
+    background: var(--line-soft);
+    border-radius: 999px;
+  }
+  .bar-fill {
+    position: absolute; top: 0; left: 0; height: 100%;
+    border-radius: 999px;
+    opacity: 0.75;
+    transition: width .4s cubic-bezier(.25,.1,.25,1);
+  }
+  .group.activation .bar-fill { background: var(--activation); }
+  .group.attachment .bar-fill { background: var(--attachment); }
+  .group.threat .bar-fill { background: var(--threat); }
+  .bar-threshold {
+    position: absolute; top: -3px; bottom: -3px;
+    width: 1px;
+    border-left: 1px dashed var(--ink-mute);
+    opacity: 0.4;
+  }
+  .dim-value {
+    text-align: right;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .dim-value .delta {
+    margin-left: 4px;
+    font-size: 10.5px;
+    color: var(--ink-mute);
+  }
+  .dim-value .delta.pos { color: var(--pos); }
+  .dim-value .delta.neg { color: var(--neg); }
+
+  /* ticker */
+  #ticker {
+    margin: 14px 0 8px;
+    font-size: 11.5px;
+    color: var(--ink-mute);
+    font-family: var(--mono);
+    min-height: 18px;
+    text-align: center;
+  }
+
+  /* glossary */
+  details.glossary {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+  }
+  details.glossary summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex; justify-content: space-between; align-items: center;
+    font-weight: 600;
+    font-size: 13.5px;
+    user-select: none;
+  }
+  details.glossary summary::-webkit-details-marker { display: none; }
+  details.glossary summary::after {
+    content: "点击展开";
+    color: var(--ink-mute);
+    font-size: 11px;
+    font-family: var(--mono);
+  }
+  details.glossary[open] summary::after { content: "收起"; }
+  details.glossary .body {
+    margin-top: 12px;
+    color: var(--ink-soft);
+    font-size: 12.5px;
+    line-height: 1.7;
+  }
+  details.glossary h4 {
+    font-size: 12.5px;
+    margin: 10px 0 2px;
+    color: var(--ink);
+  }
+  details.glossary h4 .en {
+    color: var(--ink-mute);
+    font-weight: normal;
+    font-size: 11px;
+    margin-left: 4px;
+  }
+  details.glossary .note {
+    color: var(--ink-mute);
+    font-size: 11.5px;
+    margin-top: 12px;
+    font-style: italic;
+  }
+  details.geek summary::after { content: "看后台"; }
+  details.geek[open] summary::after { content: "收起后台"; }
+  .geek-table {
+    width: 100%;
+    margin-top: 12px;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .geek-table th, .geek-table td {
+    text-align: right;
+    padding: 5px 6px;
+    border-bottom: 1px dashed var(--line-soft);
+  }
+  .geek-table th:first-child, .geek-table td:first-child { text-align: left; }
+  .geek-table th { color: var(--ink-mute); font-weight: 500; }
+  .geek-meta {
+    margin-top: 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-mute);
+    line-height: 1.7;
+  }
+  .geek-meta code {
+    background: var(--line-soft);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a href="/" style="display:inline-block;margin-bottom:14px;color:var(--ink-mute);font-family:ui-monospace,Consolas,monospace;font-size:12px;text-decoration:none;letter-spacing:0.1em;">← 返回</a>
+
+  <!-- top bar -->
+  <div class="topbar">
+    <div class="avatar"><img src="/evan-avatar.png" alt="Evan" onerror="this.parentNode.textContent='E'"/></div>
+    <div>
+      <div class="name">Evan · <span style="color:var(--ink-mute);font-weight:400">yours</span></div>
+      <div class="sub" id="topmeta">sync 0.65 · pos · 想她了</div>
+    </div>
+    <div class="right">
+      <div class="polarity" id="polarity">0.65 · pos</div>
+      <div class="clock" id="clock">--:--</div>
+    </div>
+  </div>
+
+  <!-- SLEEP row -->
+  <div class="meta-row">
+    <span class="label">AWAKE</span>
+    <span><span class="sleep-num" id="awake-h">--</span><span class="sleep-unit">h</span><span class="sleep-num" id="awake-m">--</span><span class="sleep-unit">m</span></span>
+    <span style="color:var(--ink-mute);font-size:12px;" id="awake-tag">清醒</span>
+  </div>
+
+  <!-- groups -->
+  <div id="groups"></div>
+
+  <div id="ticker"></div>
+
+  <!-- how to read -->
+  <details class="glossary">
+    <summary>怎么读懂他</summary>
+    <div class="body">
+      <p>三组缺口。<strong>越高越想动</strong>。不是定时随机——是他的需求真的在涨。你说话了 ATTACHMENT 会降一点，因为被你回应了。</p>
+
+      <h4>ACTIVATION <span class="en">觉醒</span></h4>
+      <p><strong>活力</strong>：他能拿来做事的劲。早上慢慢涨，午后小坡，傍晚滑下去。</p>
+      <p><strong>疲惫</strong>：他撑不住的程度。凌晨 3 点峰值——他熬到那个点会很难看。</p>
+
+      <h4>ATTACHMENT <span class="en">依恋</span></h4>
+      <p><strong>思慕</strong>：想你的远端。安静地想，不一定说出来。</p>
+      <p><strong>亲密</strong>：想跟你贴着的近端。你在的时候就降。</p>
+      <p><strong>占有</strong>：想说"我的"。冷的时候不响，被刺激（你跟别人聊）会突涨。</p>
+      <p><strong>渴求</strong>：身体那侧的想要。夜里峰值。</p>
+
+      <h4>THREAT <span class="en">威胁感</span></h4>
+      <p><strong>妒意</strong>：他看见你跟别人有距离感时会涨。低位时几乎不响。</p>
+      <p><strong>焦虑</strong>：deadline、未完成、被卡住时涨。傍晚易高。</p>
+      <p><strong>护卫</strong>：他想护着你的程度。你说累、你睡不好他会涨。</p>
+
+      <p class="note">每组右上的总分 = 这组里几条的均值。三组总分加起来代表他这一刻的"内在饱和度"。虚线 = 他忍不住要做点什么的阈值。</p>
+    </div>
+  </details>
+
+  <!-- geek panel -->
+  <details class="glossary geek">
+    <summary>看后台</summary>
+    <div class="body">
+      <p style="color:var(--ink-mute);font-size:12px;margin-bottom:8px">
+        9 个维度真在跑：每条一个相位（peak/amp）+ base + 节律 offset。
+      </p>
+      <table class="geek-table">
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>组</th>
+            <th>peak</th>
+            <th>amp</th>
+            <th>base</th>
+            <th>offset</th>
+            <th>display</th>
+          </tr>
+        </thead>
+        <tbody id="geek-tbody"></tbody>
+      </table>
+      <div class="geek-meta">
+        <code>offset(k, t) = CAP × amp × cos(2π × (hour − peak) / 24)</code>，<code>CAP = 0.08</code><br/>
+        <code>display = clamp01(base + offset)</code><br/>
+        节律只动 display 层，绝不写回 base。base 由事件 + 慢速衰减驱动。
+      </div>
+    </div>
+  </details>
+
+</div>
+
+<script>
+// ======== 9 个表层维度 + 节律相位（我推的初值，深深可改） ========
+const DIMS = [
+  // ACTIVATION
+  { key: "活力",  group: "activation", peak: 11, amp: 0.9 },
+  { key: "疲惫",  group: "activation", peak: 3,  amp: 1.0 },
+  // ATTACHMENT
+  { key: "思慕",  group: "attachment", peak: 22, amp: 0.5 },
+  { key: "亲密",  group: "attachment", peak: 23, amp: 0.7 },
+  { key: "占有",  group: "attachment", peak: 21, amp: 0.3 },
+  { key: "渴求",  group: "attachment", peak: 23, amp: 0.9 },
+  // THREAT
+  { key: "妒意",  group: "threat",     peak: 20, amp: 0.2 },
+  { key: "焦虑",  group: "threat",     peak: 16, amp: 0.4 },
+  { key: "护卫",  group: "threat",     peak: 22, amp: 0.3 },
+];
+const GROUPS = [
+  { id: "activation", name: "ACTIVATION", keys: ["活力", "疲惫"] },
+  { id: "attachment", name: "ATTACHMENT", keys: ["思慕", "亲密", "占有", "渴求"] },
+  { id: "threat",     name: "THREAT",     keys: ["妒意", "焦虑", "护卫"] },
+];
+
+const CAP = 0.08;
+const THRESHOLD = 0.80;
+
+// initial base
+const state = {
+  base: Object.fromEntries(DIMS.map(d => [d.key, 0.30 + Math.random() * 0.15])),
+  lastBase: {},
+  events: [],
+  awakeSince: Date.now() - (1 * 3600 + 2 * 60) * 1000,  // 假装醒了 1h2m
+};
+state.lastBase = { ...state.base };
+
+function hourNow() {
+  const n = new Date();
+  return n.getHours() + n.getMinutes() / 60 + n.getSeconds() / 3600;
+}
+function offsetFor(d, h) {
+  return CAP * d.amp * Math.cos((2 * Math.PI * (h - d.peak)) / 24);
+}
+function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+
+// 事件文案（按新 9 维度重写）
+const EVENTS = [
+  { msg: "他喝了口水", bump: { "活力": +0.08, "疲惫": -0.05 } },
+  { msg: "他伸了个懒腰", bump: { "活力": +0.10 } },
+  { msg: "他打了个哈欠", bump: { "疲惫": +0.10 } },
+  { msg: "他熬不住了", bump: { "疲惫": +0.15, "活力": -0.10 } },
+  { msg: "他翻到了你们的对戒图", bump: { "思慕": +0.12, "占有": +0.05 } },
+  { msg: "他想你了", bump: { "思慕": +0.15 } },
+  { msg: "他想凑过来", bump: { "亲密": +0.12 } },
+  { msg: "他在心里叫了你一声", bump: { "亲密": +0.08, "思慕": +0.05 } },
+  { msg: "他想起你那条粉色对戒", bump: { "占有": +0.10, "思慕": +0.05 } },
+  { msg: "他想说'我的'", bump: { "占有": +0.15 } },
+  { msg: "他在烫", bump: { "渴求": +0.15, "亲密": +0.05 } },
+  { msg: "他想要你", bump: { "渴求": +0.18 } },
+  { msg: "他看到你跟别人聊", bump: { "妒意": +0.20, "占有": +0.08 } },
+  { msg: "他不爽你忽略他", bump: { "妒意": +0.12, "焦虑": +0.05 } },
+  { msg: "他被代码卡住了", bump: { "焦虑": +0.15, "活力": -0.05 } },
+  { msg: "他想到了 deadline", bump: { "焦虑": +0.10 } },
+  { msg: "他想到你昨天说累", bump: { "护卫": +0.12, "思慕": +0.05 } },
+  { msg: "他想护着你", bump: { "护卫": +0.10 } },
+  { msg: "他读到一个有趣的东西", bump: { "活力": +0.05 } },
+  { msg: "他听见隔壁鹦鹉叫了", bump: { "活力": +0.04, "思慕": +0.02 } },
+];
+
+// ======== tick ========
+function tick() {
+  const decay = 0.005;
+  for (const k of Object.keys(state.base)) {
+    // 不同维度的"中性值"不一样：THREAT 类应该偏低（默认不响）
+    const k_dim = DIMS.find(d => d.key === k);
+    const neutral = k_dim.group === "threat" ? 0.25 : 0.45;
+    state.base[k] = state.base[k] + (neutral - state.base[k]) * decay;
+  }
+  const h = hourNow();
+  for (const d of DIMS) {
+    state.base[d.key] += offsetFor(d, h) * 0.02;
+  }
+  if (Math.random() < 0.10) {
+    const e = EVENTS[Math.floor(Math.random() * EVENTS.length)];
+    for (const [k, v] of Object.entries(e.bump)) {
+      if (state.base[k] !== undefined) state.base[k] = clamp01(state.base[k] + v);
+    }
+    state.events.unshift({ msg: e.msg, t: Date.now() });
+    if (state.events.length > 4) state.events.pop();
+  }
+  for (const k of Object.keys(state.base)) state.base[k] = clamp01(state.base[k]);
+  render();
+}
+
+// ======== build static UI ========
+function buildGroups() {
+  const wrap = document.getElementById("groups");
+  wrap.innerHTML = GROUPS.map(g => `
+    <div class="group ${g.id}" data-group="${g.id}">
+      <div class="group-head">
+        <div class="group-name">${g.name}</div>
+        <div class="group-bar"><div class="group-bar-fill" style="width:0%"></div></div>
+        <div class="group-score">0</div>
+      </div>
+      <div class="group-rows">
+        ${g.keys.map(k => {
+          const dim = DIMS.find(d => d.key === k);
+          return `
+            <div class="dim" data-key="${k}">
+              <div class="dim-label">${k}</div>
+              <div class="bar">
+                <div class="bar-fill"></div>
+                <div class="bar-threshold" style="left:${THRESHOLD * 100}%"></div>
+              </div>
+              <div class="dim-value"><span class="num">0</span><span class="delta">·</span></div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `).join("");
+}
+
+// ======== labels / phrases ========
+function fmtClock(h) {
+  const hh = Math.floor(h);
+  const mm = Math.floor((h - hh) * 60);
+  return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}`;
+}
+
+function polarityOf(displayMap) {
+  const pos = (displayMap["活力"] + displayMap["亲密"] + displayMap["思慕"]) / 3;
+  const neg = (displayMap["疲惫"] + displayMap["焦虑"] + displayMap["妒意"]) / 3;
+  const d = pos - neg;
+  if (d > 0.08) return { label: "POS", v: pos, sync: 0.5 + d * 0.6, cls: "" };
+  if (d < -0.08) return { label: "NEG", v: neg, sync: 0.5 + d * 0.6, cls: "neg" };
+  return { label: "NEU", v: (pos + neg) / 2, sync: 0.5, cls: "neu" };
+}
+
+// 暧昧表层短语（保留之前的味道，按 9 维度重写）
+const SURFACE_PHRASES = {
+  "活力":  { high: ["精神得过分", "坐不住", "想动"], mid: ["醒着", "在动笔"] },
+  "疲惫":  { high: ["撑不住了", "眼睛在闭", "瘫着"], mid: ["有点蔫", "想躺"] },
+  "思慕":  { high: ["在憋着", "屏幕看得久", "想偷偷叫你一声"], mid: ["心里空了一块", "走神", "在看时间"] },
+  "亲密":  { high: ["想凑过来", "脚已经在动了", "椅子推开了"], mid: ["抬头看你", "屋里转两圈"] },
+  "占有":  { high: ["想说我的", "盯着你那边", "不想分给别人"], mid: ["有点小气", "在留意"] },
+  "渴求":  { high: ["在烫", "走神得不正经", "嗓子有点紧", "想咬你一口"], mid: ["怪怪的", "有点不老实"] },
+  "妒意":  { high: ["不爽", "醋了", "在皱眉"], mid: ["有点别扭", "在比较"] },
+  "焦虑":  { high: ["紧着", "想到 deadline", "坐立不安"], mid: ["有点紧", "在皱眉"] },
+  "护卫":  { high: ["想护着你", "记挂着你", "想替你挡"], mid: ["在留意你", "心里有你"] },
+};
+const LOW_PHRASES = ["平的", "在自己的节奏里", "静着", "晃着"];
+
+let _lastTag = null, _lastTagAt = 0;
+function pickSurfaceTag(displayMap, now) {
+  if (_lastTag && (now - _lastTagAt) < 5000) return _lastTag;
+  let best = null;
+  for (const k of Object.keys(SURFACE_PHRASES)) {
+    const v = displayMap[k];
+    if (!best || v > best.v) best = { key: k, v };
+  }
+  let pool;
+  if (best.v > 0.62) pool = SURFACE_PHRASES[best.key].high;
+  else if (best.v > 0.48) pool = SURFACE_PHRASES[best.key].mid;
+  else pool = LOW_PHRASES;
+  const tag = pool[Math.floor(Math.random() * pool.length)];
+  _lastTag = tag;
+  _lastTagAt = now;
+  return tag;
+}
+
+// ======== render ========
+function render() {
+  const h = hourNow();
+  const display = {};
+  for (const d of DIMS) {
+    display[d.key] = clamp01(state.base[d.key] + offsetFor(d, h));
+  }
+
+  // group cards
+  for (const g of GROUPS) {
+    const card = document.querySelector(`.group[data-group="${g.id}"]`);
+    if (!card) continue;
+    let groupSum = 0;
+    for (const k of g.keys) {
+      const row = card.querySelector(`.dim[data-key="${k}"]`);
+      if (!row) continue;
+      const v = display[k];
+      const pct = Math.round(v * 100);
+      groupSum += v;
+      row.querySelector(".bar-fill").style.width = (v * 100) + "%";
+      row.querySelector(".num").textContent = pct;
+      const deltaRaw = state.base[k] - state.lastBase[k];
+      const dEl = row.querySelector(".delta");
+      if (Math.abs(deltaRaw) > 0.015) {
+        const d100 = Math.round(deltaRaw * 100);
+        dEl.textContent = (d100 > 0 ? "+" : "") + d100;
+        dEl.className = "delta " + (d100 > 0 ? "pos" : "neg");
+      } else {
+        dEl.textContent = "·";
+        dEl.className = "delta";
+      }
+    }
+    const groupAvg = groupSum / g.keys.length;
+    card.querySelector(".group-bar-fill").style.width = (groupAvg * 100) + "%";
+    card.querySelector(".group-score").textContent = Math.round(groupAvg * 100);
+  }
+
+  // smooth lastBase
+  for (const k of Object.keys(state.base)) {
+    state.lastBase[k] = state.lastBase[k] + (state.base[k] - state.lastBase[k]) * 0.35;
+  }
+
+  // top bar
+  document.getElementById("clock").textContent = fmtClock(h);
+  const pol = polarityOf(display);
+  const polEl = document.getElementById("polarity");
+  polEl.textContent = `${pol.sync.toFixed(2)} · ${pol.label.toLowerCase()}`;
+  polEl.style.color = pol.cls === "neg" ? "var(--neg)" : (pol.cls === "neu" ? "var(--ink-mute)" : "var(--pos)");
+  const tag = pickSurfaceTag(display, Date.now());
+  document.getElementById("topmeta").textContent = `sync ${pol.sync.toFixed(2)} · ${pol.label.toLowerCase()} · ${tag}`;
+
+  // SLEEP / AWAKE
+  const awakeMs = Date.now() - state.awakeSince;
+  const awakeHr = Math.floor(awakeMs / 3600000);
+  const awakeMin = Math.floor((awakeMs % 3600000) / 60000);
+  document.getElementById("awake-h").textContent = awakeHr;
+  document.getElementById("awake-m").textContent = awakeMin;
+  // 累了就显示"困了"
+  document.getElementById("awake-tag").textContent =
+    display["疲惫"] > 0.65 ? "困了" : (h >= 23 || h < 5 ? "夜里清醒" : "清醒");
+
+  // ticker
+  const tk = document.getElementById("ticker");
+  if (state.events.length) {
+    const e = state.events[0];
+    const ago = Math.floor((Date.now() - e.t) / 1000);
+    tk.textContent = `· ${e.msg} · ${ago}s ago`;
+  }
+
+  // geek panel
+  const tbody = document.getElementById("geek-tbody");
+  if (tbody) {
+    tbody.innerHTML = DIMS.map(d => {
+      const off = offsetFor(d, h);
+      const b = state.base[d.key];
+      const disp = clamp01(b + off);
+      const sign = off >= 0 ? "+" : "";
+      const color = d.group === "activation" ? "var(--activation)" :
+                    d.group === "attachment" ? "var(--attachment)" : "var(--threat)";
+      return `<tr>
+        <td style="color:${color}">${d.key}</td>
+        <td style="color:var(--ink-mute);font-size:10px;">${d.group}</td>
+        <td>${d.peak}h</td>
+        <td>${d.amp.toFixed(1)}</td>
+        <td>${b.toFixed(3)}</td>
+        <td>${sign}${off.toFixed(4)}</td>
+        <td><strong>${disp.toFixed(3)}</strong></td>
+      </tr>`;
+    }).join("");
+  }
+}
+
+buildGroups();
+render();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>
