@@ -664,7 +664,47 @@ function render() {
 
 buildGroups();
 render();
-setInterval(tick, 2000);
+
+// ============ 拉真值 ============
+// 优先从 /api/state 拉 pulse_base（evan-bot 写到 gist 的真值）。
+// 拉失败就退回前端 mock data（setInterval(tick) 那一套）——网络抽风时不让 UI 死。
+let _usingMock = false;
+let _mockTimer = null;
+
+async function loadRealState() {
+  try {
+    const r = await fetch('/api/state', { credentials: 'include' });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const s = await r.json();
+    if (s.base) {
+      for (const k of Object.keys(state.base)) {
+        if (typeof s.base[k] === 'number') state.base[k] = s.base[k];
+      }
+      // 后端不直接给 events，前端就保留自己累计的（事件 ticker 是辅助信息）
+      _usingMock = false;
+      if (_mockTimer) { clearInterval(_mockTimer); _mockTimer = null; }
+      render();
+      return true;
+    }
+  } catch (e) {
+    // fall through to mock
+  }
+  return false;
+}
+
+async function startup() {
+  const ok = await loadRealState();
+  if (!ok) {
+    // 后端拉不到 → 切到 mock 模式
+    _usingMock = true;
+    _mockTimer = setInterval(tick, 2000);
+    console.log('[Pulse] 后端拉不到，前端 mock 兜底');
+  } else {
+    // 后端 OK → 每 30s 拉一次真值（跟首页缩略图同频）
+    setInterval(loadRealState, 30000);
+  }
+}
+startup();
 </script>
 </body>
 </html>
