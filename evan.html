@@ -22,6 +22,26 @@
     --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft Yahei", sans-serif;
   }
   * { box-sizing: border-box; }
+  .back-home {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 18px;
+    padding: 7px 14px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--ink-soft);
+    font-family: var(--cjk, var(--sans));
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-decoration: none;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .back-home:hover, .back-home:active {
+    color: var(--attachment);
+    border-color: var(--attachment);
+  }
   body {
     margin: 0;
     background: var(--bg);
@@ -353,7 +373,7 @@
 <body>
 <div class="wrap">
 
-  <a href="/" style="display:inline-block;margin-bottom:14px;color:var(--ink-mute);font-family:ui-monospace,Consolas,monospace;font-size:12px;text-decoration:none;letter-spacing:0.1em;">← 返回</a>
+  <a href="/" class="back-home">← 返回首页</a>
 
   <!-- top bar -->
   <div class="topbar">
