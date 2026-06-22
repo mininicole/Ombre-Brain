@@ -727,25 +727,52 @@ render();
 let _usingMock = false;
 let _mockTimer = null;
 
+let _firstRealLoad = true;
 async function loadRealState() {
   try {
     const r = await fetch('/api/state', { credentials: 'include' });
     if (!r.ok) throw new Error('http ' + r.status);
     const s = await r.json();
     if (s.base) {
-      for (const k of Object.keys(state.base)) {
-        if (typeof s.base[k] === 'number') state.base[k] = s.base[k];
+      if (_firstRealLoad) {
+        // 第一次拉到真值：把 base 和 lastBase 都设成真值（delta=0），
+        // 不让初始 mock 默认值跟真值的差被误读成"刚才变化了"。
+        for (const k of Object.keys(state.base)) {
+          if (typeof s.base[k] === 'number') {
+            state.base[k] = s.base[k];
+            state.lastBase[k] = s.base[k];
+          }
+        }
+        _firstRealLoad = false;
+      } else {
+        // 后续刷新：当前 base 作为 lastBase（30s 前真值快照），
+        // 再覆盖 base 为最新真值。delta = 这 30 秒后端实际变化。
+        for (const k of Object.keys(state.base)) {
+          if (typeof s.base[k] === 'number') {
+            state.lastBase[k] = state.base[k];
+            state.base[k] = s.base[k];
+          }
+        }
       }
-      // 后端不直接给 events，前端就保留自己累计的（事件 ticker 是辅助信息）
       _usingMock = false;
       if (_mockTimer) { clearInterval(_mockTimer); _mockTimer = null; }
-      render();
+      renderRealMode();
       return true;
     }
   } catch (e) {
     // fall through to mock
   }
   return false;
+}
+
+// 真值模式专用 render：不调 lastBase 平滑（不让 30 秒间的 render 把 delta 磨成 0）
+function renderRealMode() {
+  const _origLastBaseSnapshot = { ...state.lastBase };
+  render();
+  // render 里有一段把 lastBase 渐近 base 35% 的代码（mock 模式平滑用）。
+  // 真值模式下我们希望 lastBase 在 30s 内保持快照不动，下次 loadRealState
+  // 时由它统一翻新。所以 render 后还原。
+  state.lastBase = _origLastBaseSnapshot;
 }
 
 async function startup() {
