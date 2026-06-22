@@ -2705,6 +2705,28 @@ async def api_state(request):
             for k in PHASE:
                 if isinstance(saved_base.get(k), (int, float)):
                     base[k] = max(0.0, min(1.0, saved_base[k]))
+            # 衰减：base 朝 neutral 半衰期 3h——evan-bot 每次写 base 时记的 _updated_at
+            # 是事件发生时刻。读到现在，根据时差衰减一下，把"不聊话期间应该自然落下"算上。
+            updated_at_str = saved_base.get("_updated_at")
+            if updated_at_str:
+                try:
+                    if updated_at_str.endswith("Z"):
+                        updated_at_str = updated_at_str.replace("Z", "+00:00")
+                    updated_at_dt = _dt.fromisoformat(updated_at_str)
+                    if updated_at_dt.tzinfo is None:
+                        from datetime import timezone as _tz
+                        updated_at_dt = updated_at_dt.replace(tzinfo=_tz.utc)
+                    from datetime import timezone as _tz
+                    now_utc = _dt.now(_tz.utc)
+                    elapsed_hours = max(0.0, (now_utc - updated_at_dt).total_seconds() / 3600.0)
+                    HALF_LIFE_HOURS = 3.0
+                    factor = pow(0.5, elapsed_hours / HALF_LIFE_HOURS)
+                    threat_keys = {"妒意", "焦虑", "护卫"}
+                    for k in PHASE:
+                        neutral = 0.25 if k in threat_keys else 0.45
+                        base[k] = max(0.0, min(1.0, neutral + (base[k] - neutral) * factor))
+                except Exception:
+                    pass
             events = state.get("pulse_events") or []
         except Exception as e:
             # gist 抽风就用 defaults，不让前端瞎
