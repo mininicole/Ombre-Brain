@@ -1893,55 +1893,6 @@ async def api_search(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@mcp.custom_route("/api/network", methods=["GET"])
-async def api_network(request):
-    """Get embedding similarity network for visualization."""
-    from starlette.responses import JSONResponse
-    err = _require_auth(request)
-    if err: return err
-    try:
-        all_buckets = await bucket_mgr.list_all(include_archive=False)
-        nodes = []
-        edges = []
-        embeddings = {}
-
-        for b in all_buckets:
-            meta = b.get("metadata", {})
-            bid = b["id"]
-            nodes.append({
-                "id": bid,
-                "name": meta.get("name", bid),
-                "type": meta.get("type", "dynamic"),
-                "domain": meta.get("domain", []),
-                "valence": meta.get("valence", 0.5),
-                "arousal": meta.get("arousal", 0.3),
-                "score": decay_engine.calculate_score(meta),
-                "importance": meta.get("importance", 5),
-                "created": meta.get("created", ""),
-                # 前 80 字摘要：tooltip fallback——当 name 是 hash 占位符时显示
-                "snippet": (b.get("content") or "")[:80],
-                "resolved": meta.get("resolved", False),
-                "pinned": meta.get("pinned", False),
-                "digested": meta.get("digested", False),
-            })
-            if embedding_engine and embedding_engine.enabled:
-                emb = await embedding_engine.get_embedding(bid)
-                if emb is not None:
-                    embeddings[bid] = emb
-
-        # Build edges from embeddings (similarity > 0.5)
-        ids = list(embeddings.keys())
-        for i, id_a in enumerate(ids):
-            for id_b in ids[i+1:]:
-                sim = embedding_engine._cosine_similarity(embeddings[id_a], embeddings[id_b])
-                if sim > 0.5:
-                    edges.append({"source": id_a, "target": id_b, "similarity": round(sim, 3)})
-
-        return JSONResponse({"nodes": nodes, "edges": edges})
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
 @mcp.custom_route("/api/breath-debug", methods=["GET"])
 async def api_breath_debug(request):
     """Debug endpoint: simulate breath scoring and return per-bucket breakdown."""
