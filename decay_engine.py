@@ -107,8 +107,8 @@ class DecayEngine:
         if metadata.get("type") == "permanent":
             return 999.0
 
-        # --- Feel buckets: never decay, fixed moderate score ---
-        if metadata.get("type") == "feel":
+        # --- Feel and i buckets: never decay, fixed moderate score ---
+        if metadata.get("type") in ("feel", "i"):
             return 50.0
 
         try:
@@ -198,9 +198,9 @@ class DecayEngine:
         for bucket in buckets:
             meta = bucket.get("metadata", {})
 
-            # Skip permanent / pinned / protected / feel buckets
-            # 跳过固化桶、钉选/保护桶和 feel 桶
-            if meta.get("type") in ("permanent", "feel") or meta.get("pinned") or meta.get("protected"):
+            # Skip permanent / pinned / protected / feel / i buckets
+            # 跳过固化桶、钉选/保护桶、feel 桶、i 桶
+            if meta.get("type") in ("permanent", "feel", "i") or meta.get("pinned") or meta.get("protected"):
                 continue
 
             checked += 1

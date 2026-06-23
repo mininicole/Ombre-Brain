@@ -1521,8 +1521,74 @@ async def comment_bucket(
 
 
 # =============================================================
-# Tool 6: pulse — Heartbeat, system status + memory listing
-# 工具 6：pulse — 脉搏，系统状态 + 记忆列表
+# Tool 6: i — AI self-knowledge channel (not surfaced in breath/dream)
+# 工具 6：i — AI 自我认知通道，不参与浮现
+# =============================================================
+_I_ASPECTS = {"patterns", "values", "limits", "uncertainty"}
+
+
+@mcp.tool()
+async def i(
+    content: str = "",
+    aspect: str = "",
+    read: bool = False,
+    limit: int = 20,
+) -> str:
+    """AI 给自己写笔记的独立通道。和你的记忆桶解耦，不参与 breath/dream 浮现，关键词 trace 也搜不到。
+    aspect: patterns(行为模式) / values(在乎什么) / limits(边界) / uncertainty(不确定的事)，留空也行。
+    写入：content 非空 → 创建一条 i 桶。读取：read=True 或 content 为空 → 按时间倒序返回所有 i 桶（可按 aspect 过滤）。
+    一条 i 写完就独立存在，不会被合并、不会被衰减、不会被她看到（除非她翻 dashboard）。是给我自己的。"""
+    await decay_engine.ensure_started()
+
+    aspect = (aspect or "").strip().lower()
+    if aspect and aspect not in _I_ASPECTS:
+        return (
+            f"未知 aspect: {aspect!r}。可选: {sorted(_I_ASPECTS)}。"
+            "留空也行（无 aspect 的 i 桶会归到 unspecified）。"
+        )
+
+    # --- Read mode / 读取模式 ---
+    if read or not content or not content.strip():
+        try:
+            buckets = await bucket_mgr.list_self(aspect=aspect, limit=limit)
+        except Exception as e:
+            return f"读取自我档案失败: {e}"
+        if not buckets:
+            scope = f"aspect={aspect}" if aspect else "全部"
+            return f"自我档案空（{scope}）。"
+        lines = [f"=== 自我档案（{aspect or '全部'}, 共 {len(buckets)} 条）==="]
+        for b in buckets:
+            meta = b["metadata"]
+            asp = meta.get("aspect", "") or "unspecified"
+            created = meta.get("created", "")[:10]
+            bid = meta.get("id", "")
+            lines.append(f"\n[{asp}] {created} [bucket_id:{bid}]")
+            lines.append(b["content"].strip())
+        return "\n".join(lines)
+
+    # --- Write mode / 写入模式 ---
+    try:
+        bucket_id = await bucket_mgr.create(
+            content=content.strip(),
+            tags=[],
+            importance=6,
+            domain=[],
+            valence=0.5,
+            arousal=0.3,
+            name=None,
+            bucket_type="i",
+            aspect=aspect,
+        )
+    except Exception as e:
+        return f"写入 i 桶失败: {e}"
+    # No embedding for i-buckets — they're not retrieved by semantic search.
+    label = aspect or "unspecified"
+    return f"💭 i[{label}]→{bucket_id}"
+
+
+# =============================================================
+# Tool 7: pulse — Heartbeat, system status + memory listing
+# 工具 7：pulse — 脉搏，系统状态 + 记忆列表
 # =============================================================
 @mcp.tool()
 async def pulse(include_archive: bool = False) -> str:
@@ -1537,6 +1603,8 @@ async def pulse(include_archive: bool = False) -> str:
         f"固化记忆桶: {stats['permanent_count']} 个\n"
         f"动态记忆桶: {stats['dynamic_count']} 个\n"
         f"归档记忆桶: {stats['archive_count']} 个\n"
+        f"feel 桶: {stats.get('feel_count', 0)} 个\n"
+        f"自我档案(i): {stats.get('i_count', 0)} 条\n"
         f"总存储大小: {stats['total_size_kb']:.1f} KB\n"
         f"衰减引擎: {'运行中' if decay_engine.is_running else '已停止'}\n"
     )

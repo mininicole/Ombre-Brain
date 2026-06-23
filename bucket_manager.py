@@ -58,6 +58,7 @@ class BucketManager:
         self.dynamic_dir = os.path.join(self.base_dir, "dynamic")
         self.archive_dir = os.path.join(self.base_dir, "archive")
         self.feel_dir = os.path.join(self.base_dir, "feel")
+        self.i_dir = os.path.join(self.base_dir, "i")
         self.fuzzy_threshold = config.get("matching", {}).get("fuzzy_threshold", 50)
         self.max_results = config.get("matching", {}).get("max_results", 5)
 
@@ -110,6 +111,7 @@ class BucketManager:
         name: str = None,
         pinned: bool = False,
         protected: bool = False,
+        aspect: str = "",
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -118,15 +120,24 @@ class BucketManager:
         pinned/protected=True: bucket won't be merged, decayed, or have importance changed.
         Importance is locked to 10 for pinned/protected buckets.
         pinned/protected 桶不参与合并与衰减，importance 强制锁定为 10。
+
+        bucket_type="i": AI self-knowledge bucket. dont_surface=True (skipped in
+        breath/dream), no decay, aspect stored as tag and metadata field. Domain
+        ignored — these belong to the AI, not a user-facing topic.
+        bucket_type="i": AI 自我认知桶。不浮现、不衰减，aspect 存为元数据。
         """
         bucket_id = generate_bucket_id()
         bucket_name = sanitize_name(name) if name else bucket_id
-        # feel buckets are allowed to have empty domain; others default to ["未分类"]
-        if bucket_type == "feel":
+        # feel and i buckets are allowed to have empty domain; others default to ["未分类"]
+        if bucket_type in ("feel", "i"):
             domain = domain if domain is not None else []
         else:
             domain = domain or ["未分类"]
         tags = tags or []
+        if bucket_type == "i" and aspect:
+            aspect_tag = f"aspect:{aspect.strip()}"
+            if aspect_tag not in tags:
+                tags = list(tags) + [aspect_tag]
         linked_content = content  # wikilink injection disabled; LLM adds [[]] via prompt
 
         # --- Pinned/protected buckets: lock importance to 10 ---
@@ -152,6 +163,9 @@ class BucketManager:
             metadata["pinned"] = True
         if protected:
             metadata["protected"] = True
+        if bucket_type == "i":
+            metadata["dont_surface"] = True
+            metadata["aspect"] = aspect.strip()
 
         # --- Assemble Markdown file (frontmatter + body) ---
         # --- 组装 Markdown 文件 ---
@@ -165,10 +179,14 @@ class BucketManager:
                 metadata["type"] = "permanent"
         elif bucket_type == "feel":
             type_dir = self.feel_dir
+        elif bucket_type == "i":
+            type_dir = self.i_dir
         else:
             type_dir = self.dynamic_dir
         if bucket_type == "feel":
             primary_domain = "沉淀物"  # feel subfolder name
+        elif bucket_type == "i":
+            primary_domain = sanitize_name(aspect.strip()) if aspect.strip() else "unspecified"
         else:
             primary_domain = sanitize_name(domain[0]) if domain else "未分类"
         target_dir = os.path.join(type_dir, primary_domain)
@@ -711,7 +729,7 @@ class BucketManager:
     # List all buckets
     # 列出所有桶
     # ---------------------------------------------------------
-    async def list_all(self, include_archive: bool = False) -> list[dict]:
+    async def list_all(self, include_archive: bool = False, include_self: bool = False) -> list[dict]:
         """
         Recursively walk directories (including domain subdirs), list all buckets.
         递归遍历目录（含域子目录），列出所有记忆桶。
@@ -721,6 +739,8 @@ class BucketManager:
         dirs = [self.permanent_dir, self.dynamic_dir, self.feel_dir]
         if include_archive:
             dirs.append(self.archive_dir)
+        if include_self:
+            dirs.append(self.i_dir)
 
         for dir_path in dirs:
             if not os.path.exists(dir_path):
@@ -731,10 +751,42 @@ class BucketManager:
                         continue
                     file_path = os.path.join(root, filename)
                     bucket = self._load_bucket(file_path)
-                    if bucket:
-                        buckets.append(bucket)
+                    if not bucket:
+                        continue
+                    # i-buckets are dont_surface=True; only included via explicit flag
+                    if not include_self and bucket["metadata"].get("dont_surface"):
+                        continue
+                    buckets.append(bucket)
 
         return buckets
+
+    # ---------------------------------------------------------
+    # List i-buckets (AI self-knowledge)
+    # 列出 i 类型桶（AI 自我认知）
+    # Independent from list_all to keep self-knowledge isolated from breath/dream.
+    # ---------------------------------------------------------
+    async def list_self(self, aspect: str = "", limit: int = 20) -> list[dict]:
+        """
+        List i-buckets, newest first. If aspect is given, filter to that aspect only.
+        列出 i 桶，最新优先。传 aspect 则只返回该维度。
+        """
+        buckets = []
+        if not os.path.exists(self.i_dir):
+            return buckets
+        aspect = aspect.strip()
+        for root, _, files in os.walk(self.i_dir):
+            for filename in files:
+                if not filename.endswith(".md"):
+                    continue
+                file_path = os.path.join(root, filename)
+                bucket = self._load_bucket(file_path)
+                if not bucket:
+                    continue
+                if aspect and bucket["metadata"].get("aspect", "") != aspect:
+                    continue
+                buckets.append(bucket)
+        buckets.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+        return buckets[: max(1, int(limit))]
 
     # ---------------------------------------------------------
     # Statistics (counts per category + total size)
@@ -750,6 +802,7 @@ class BucketManager:
             "dynamic_count": 0,
             "archive_count": 0,
             "feel_count": 0,
+            "i_count": 0,
             "total_size_kb": 0.0,
             "domains": {},
         }
@@ -759,6 +812,7 @@ class BucketManager:
             (self.dynamic_dir, "dynamic_count"),
             (self.archive_dir, "archive_count"),
             (self.feel_dir, "feel_count"),
+            (self.i_dir, "i_count"),
         ]:
             if not os.path.exists(subdir):
                 continue
@@ -832,7 +886,7 @@ class BucketManager:
         """
         if not bucket_id:
             return None
-        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir]:
+        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir, self.i_dir]:
             if not os.path.exists(dir_path):
                 continue
             for root, _, files in os.walk(dir_path):
