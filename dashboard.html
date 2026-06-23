@@ -4,39 +4,48 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ombre Brain</title>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500;600&family=Noto+Sans+SC:wght@400;500&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
 <style>
   :root {
-    --bg: #FDFCF0;
-    --bg-gradient: radial-gradient(ellipse at 30% 20%, #FDFCF0 0%, #EDE4D3 60%, #E2D1B3 100%);
-    --surface: rgba(255, 255, 255, 0.45);
-    --surface-solid: #F7F2E8;
-    --border: rgba(180, 165, 140, 0.3);
-    --border-strong: rgba(160, 140, 110, 0.5);
-    --text: #3A3530;
-    --text-dim: #8A8070;
-    --text-light: #B0A590;
-    --accent: #2F4F4F;
-    --accent-light: #3D6363;
-    --accent-glow: rgba(47, 79, 79, 0.12);
-    --positive: #4A7C59;
-    --negative: #8B4A4A;
-    --warning: #9A7B4F;
-    --shadow-light: rgba(255, 252, 240, 0.7);
-    --shadow-dark: rgba(163, 148, 120, 0.4);
-    --shadow-dark-subtle: rgba(163, 148, 120, 0.2);
+    /* 复古掌机 retro-handheld palette — warm cream plastic + pale LCD + gold */
+    --bg: #E7E2D8;
+    --bg-gradient: #E7E2D8;
+    --surface: #F4F0E8;
+    --surface-solid: #EDE8DE;
+    --border: #DCD6CA;
+    --border-strong: #C7C0B2;
+    --text: #2C2A26;
+    --text-dim: #6E695E;
+    --text-light: #9E988C;
+    --accent: #C2982F;
+    --accent-light: #D7B14A;
+    --accent-glow: rgba(194, 152, 47, 0.22);
+    --positive: #7EAD68;
+    --negative: #BE5A41;
+    --warning: #B89762;
+    --shadow-light: rgba(255, 253, 247, 0.9);
+    --shadow-dark: rgba(150, 138, 116, 0.40);
+    --shadow-dark-subtle: rgba(150, 138, 116, 0.22);
+    --lcd: #C7C9BC;
+    --lcd-text: #25271E;
+    --lcd-dim: #5B5D4F;
+    --lcd-glow: rgba(37, 39, 30, 0.18);
+    --shell-radius: 24px;
+    --radius-inner: 16px;
+    --radius-control: 12px;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: 'Share Tech Mono', 'Noto Sans SC', system-ui, sans-serif;
     font-weight: 400;
-    background: var(--bg-gradient);
-    background-attachment: fixed;
+    background: var(--bg);
     color: var(--text);
     min-height: 100vh;
-    line-height: 1.6;
+    line-height: 1.75;
+    letter-spacing: 0.02em;
     -webkit-font-smoothing: antialiased;
   }
 
@@ -55,7 +64,8 @@
   .header h1 {
     font-family: 'Cormorant Garamond', serif;
     font-size: 26px;
-    font-weight: 600;
+    font-weight: 500;
+    font-style: italic;
     color: var(--accent);
     letter-spacing: 0.5px;
   }
@@ -72,11 +82,10 @@
   }
   .search-bar input {
     background: var(--surface);
-    backdrop-filter: blur(8px);
     border: 1px solid var(--border);
     color: var(--text);
     padding: 10px 18px;
-    border-radius: 20px;
+    border-radius: 2px;
     font-family: inherit;
     font-size: 13px;
     width: 260px;
@@ -117,38 +126,86 @@
 
   .content { padding: 32px 40px; }
 
-  .filters {
+  .filters-block { margin-bottom: 24px; }
+  .filter-row {
     display: flex;
-    gap: 10px;
-    margin-bottom: 24px;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .filter-label {
+    font-family: 'Share Tech Mono', monospace, monospace;
+    font-size: 10px;
+    color: var(--text-light);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    min-width: 36px;
+    padding-top: 7px;
+    user-select: none;
+  }
+  .filter-chips {
+    display: flex;
     flex-wrap: wrap;
+    gap: 6px;
+    flex: 1;
   }
   .filter-btn {
-    padding: 8px 18px;
+    padding: 6px 16px;
     font-size: 12px;
     font-weight: 400;
-    border: none;
-    border-radius: 24px;
-    background: linear-gradient(145deg, #FAF6ED, #EDE4D3);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
     color: var(--text-dim);
     cursor: pointer;
     font-family: inherit;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 4px 4px 8px var(--shadow-dark-subtle), -4px -4px 8px var(--shadow-light);
+    transition: color 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.18s, transform 0.18s;
+    box-shadow: 2px 2px 5px var(--shadow-dark-subtle), -2px -2px 5px var(--shadow-light);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.4;
+    user-select: none;
   }
   .filter-btn:hover {
-    color: var(--accent);
-    box-shadow: 5px 5px 10px var(--shadow-dark), -5px -5px 10px var(--shadow-light);
+    color: var(--text);
+    box-shadow: 3px 3px 7px var(--shadow-dark), -3px -3px 7px var(--shadow-light);
     transform: translateY(-1px);
   }
   .filter-btn:active {
     transform: translateY(0);
-    box-shadow: inset 2px 2px 5px var(--shadow-dark-subtle), inset -2px -2px 5px var(--shadow-light);
+    box-shadow: inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
   }
   .filter-btn.active {
-    color: #F0EDE4;
-    background: linear-gradient(145deg, var(--accent-light), var(--accent));
-    box-shadow: inset 3px 3px 6px rgba(0,0,0,0.2), inset -2px -2px 4px rgba(255,255,255,0.05);
+    background: var(--accent);
+    color: #FDFCF0;
+    border-color: var(--accent);
+    box-shadow: inset 2px 2px 5px rgba(0,0,0,0.18), inset -2px -2px 4px rgba(255,255,255,0.08);
+  }
+  .filter-overflow {
+    color: var(--text-light);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .filter-overflow:hover { color: var(--text); }
+  .filter-status {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: 12px;
+    margin-top: 4px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .filter-status .filter-label { padding-top: 0; }
+  .filter-count {
+    margin-left: auto;
+    font-family: 'Share Tech Mono', monospace, monospace;
+    font-size: 11px;
+    color: var(--text-light);
+    font-variant-numeric: tabular-nums;
   }
 
   .bucket-list { display: flex; flex-direction: column; gap: 8px; }
@@ -157,11 +214,11 @@
     grid-template-columns: 22px 32px 200px 100px 80px 60px 100px 1fr 30px;
     gap: 12px;
     padding: 14px 20px;
-    border-radius: 16px;
+    border-radius: 2px;
     font-size: 13px;
     align-items: center;
     cursor: pointer;
-    transition: all 0.25s ease;
+    transition: box-shadow 0.22s, transform 0.22s, border-color 0.22s;
     background: var(--surface);
     border: 1px solid transparent;
     box-shadow: 4px 4px 10px var(--shadow-dark-subtle), -4px -4px 10px var(--shadow-light);
@@ -170,6 +227,10 @@
     border-color: var(--border);
     box-shadow: 6px 6px 14px var(--shadow-dark), -6px -6px 14px var(--shadow-light);
     transform: translateY(-1px);
+  }
+  .bucket-row:active {
+    transform: translateY(0);
+    box-shadow: inset 3px 3px 7px var(--shadow-dark-subtle), inset -2px -2px 5px var(--shadow-light);
   }
   .bucket-row .icon { font-size: 16px; text-align: center; }
   .bucket-row .name {
@@ -180,11 +241,19 @@
     color: var(--text);
   }
   .bucket-row .domain {
-    color: var(--text-dim);
-    font-size: 11px;
+    color: var(--lcd-text);
+    background: var(--lcd);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 2px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-family: 'Share Tech Mono', monospace;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    justify-self: start;
+    max-width: 100%;
   }
   .bucket-row .emotion { font-size: 11px; }
   .bucket-row .score {
@@ -192,11 +261,13 @@
     text-align: right;
     font-weight: 500;
     color: var(--accent);
+    font-family: 'Share Tech Mono', monospace;
   }
   .bucket-row .time {
     font-size: 11px;
     color: var(--text-light);
     text-align: right;
+    font-family: 'Share Tech Mono', monospace;
   }
   .bucket-row .preview {
     font-size: 12px;
@@ -409,148 +480,6 @@
     font-weight: 300;
   }
 
-  .breath-controls {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 24px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  .breath-controls input {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 10px 14px;
-    border-radius: 12px;
-    font-family: inherit;
-    font-size: 13px;
-    box-shadow: inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
-  }
-  .breath-controls input:focus {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-glow), inset 2px 2px 4px var(--shadow-dark-subtle);
-  }
-  .breath-controls button {
-    background: linear-gradient(145deg, var(--accent-light), var(--accent));
-    color: #F0EDE4;
-    border: none;
-    padding: 12px 26px;
-    border-radius: 24px;
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 6px 6px 12px rgba(40, 65, 65, 0.25), -4px -4px 10px var(--shadow-light), inset 0 1px 0 rgba(255,255,255,0.1);
-    position: relative;
-    overflow: hidden;
-  }
-  .breath-controls button::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: 24px;
-    background: linear-gradient(145deg, rgba(255,255,255,0.08), transparent);
-    pointer-events: none;
-  }
-  .breath-controls button:hover {
-    box-shadow: 8px 8px 16px rgba(40, 65, 65, 0.3), -5px -5px 12px var(--shadow-light);
-    transform: translateY(-2px);
-  }
-  .breath-controls button:active {
-    transform: translateY(0);
-    box-shadow: inset 3px 3px 6px rgba(0,0,0,0.2), inset -2px -2px 4px rgba(255,255,255,0.05);
-  }
-  .breath-controls label {
-    font-size: 12px;
-    color: var(--text-dim);
-    font-weight: 500;
-  }
-  .breath-info {
-    font-size: 12px;
-    color: var(--text-dim);
-    margin-bottom: 20px;
-    line-height: 1.8;
-    padding: 16px 20px;
-    background: var(--surface);
-    border-radius: 16px;
-    border: 1px solid var(--border);
-  }
-  .breath-info code {
-    background: var(--accent-glow);
-    padding: 2px 8px;
-    border-radius: 6px;
-    color: var(--accent);
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    font-size: 11px;
-  }
-  .score-row {
-    display: grid;
-    grid-template-columns: 32px 180px 1fr 60px;
-    gap: 12px;
-    padding: 12px 16px;
-    border-radius: 12px;
-    font-size: 13px;
-    align-items: center;
-    transition: all 0.2s ease;
-    margin-bottom: 4px;
-  }
-  .score-row:hover {
-    background: var(--surface);
-    box-shadow: 3px 3px 8px var(--shadow-dark-subtle), -3px -3px 8px var(--shadow-light);
-  }
-  .score-row .rank { color: var(--text-light); font-size: 12px; text-align: center; font-weight: 500; }
-  .score-row .name {
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .score-bars { display: flex; gap: 4px; align-items: center; }
-  .score-bar-group { display: flex; flex-direction: column; gap: 1px; flex: 1; }
-  .score-bar-track {
-    height: 5px;
-    background: var(--border);
-    border-radius: 3px;
-    overflow: hidden;
-  }
-  .score-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
-  .score-bar-label {
-    font-size: 9px;
-    color: var(--text-light);
-    display: flex;
-    justify-content: space-between;
-  }
-  .score-final { font-size: 14px; font-weight: 600; text-align: right; }
-  .score-pass { color: var(--positive); }
-  .score-fail { color: var(--text-light); }
-
-  .breath-flow {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 24px;
-    padding: 16px 20px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    font-size: 12px;
-    overflow-x: auto;
-    box-shadow: 4px 4px 10px var(--shadow-dark-subtle), -4px -4px 10px var(--shadow-light);
-  }
-  .flow-step {
-    padding: 10px 14px;
-    border-radius: 12px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    white-space: nowrap;
-    text-align: center;
-    min-width: 90px;
-    box-shadow: inset 2px 2px 4px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
-  }
-  .flow-step.active { border-color: var(--accent); color: var(--accent); }
-  .flow-arrow { color: var(--text-light); font-size: 16px; }
 
   @media (max-width: 768px) {
     .header { padding: 20px; flex-wrap: wrap; }
@@ -571,7 +500,6 @@
     .detail-panel { width: 100%; }
     .config-row { flex-wrap: wrap; }
     .config-row label { width: 100%; }
-    .breath-flow { display: none; }
   }
 </style>
 </head>
@@ -590,50 +518,34 @@
 
 <div class="tabs">
   <div class="tab active" data-tab="list">记忆桶</div>
-  <div class="tab" data-tab="breath">Breath 模拟</div>
   <div class="tab" data-tab="config">配置</div>
   <div class="tab" data-tab="import">导入</div>
   <div class="tab" data-tab="settings">设置</div>
 </div>
 
 <div class="content" id="list-view">
-  <div class="filters" id="filters"></div>
+  <div class="filters-block">
+    <div class="filter-row">
+      <span class="filter-label">类型</span>
+      <div class="filter-chips" id="type-filters"></div>
+    </div>
+    <div class="filter-row">
+      <span class="filter-label">域</span>
+      <div class="filter-chips" id="domain-filters"></div>
+    </div>
+    <div class="filter-status">
+      <span class="filter-label">当前</span>
+      <span id="filter-current-text">全部</span>
+      <span class="filter-count" id="filter-count">—</span>
+    </div>
+  </div>
   <div class="batch-bar" id="batch-bar" style="display:flex;align-items:center;gap:12px;padding:6px 4px;font-size:12px;color:var(--text-dim);">
     <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="select-all" onclick="toggleSelectAll(this)" /> 全选</label>
     <span id="select-count">已选 0</span>
-    <button id="batch-del-btn" onclick="batchDelete()" disabled style="margin-left:auto;background:none;border:1px solid var(--border);color:var(--negative);border-radius:14px;padding:4px 12px;cursor:pointer;">🗑 删除选中</button>
+    <button id="batch-del-btn" onclick="batchDelete()" disabled style="margin-left:auto;background:none;border:1px solid var(--border);color:var(--negative);border-radius:999px;padding:4px 14px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;"><i data-lucide="trash-2" style="width:13px;height:13px;"></i>删除选中</button>
   </div>
   <div class="bucket-list" id="bucket-list">
     <div class="loading">加载中…</div>
-  </div>
-</div>
-
-<div class="content" id="breath-view" style="display:none">
-  <div class="breath-flow" id="breath-flow">
-    <div class="flow-step" id="fs-input">① 输入<br><small>query / valence / arousal</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-candidates">② 候选池<br><small id="fs-cand-n">— 桶</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-scoring">③ 四维评分<br><small>topic×4 + emotion×2 + time×2.5 + imp×1</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-threshold">④ 阈值过滤<br><small id="fs-thresh-n">≥50 → — 通过</small></div>
-    <span class="flow-arrow">→</span>
-    <div class="flow-step" id="fs-sort">⑤ 降序排列<br><small>返回 top N</small></div>
-  </div>
-
-  <div class="breath-controls">
-    <label>Query</label>
-    <input type="text" id="breath-query" placeholder="关键词…" style="width:220px" />
-    <label>Valence</label>
-    <input type="number" id="breath-valence" placeholder="0~1" min="0" max="1" step="0.1" style="width:80px" />
-    <label>Arousal</label>
-    <input type="number" id="breath-arousal" placeholder="0~1" min="0" max="1" step="0.1" style="width:80px" />
-    <button onclick="runBreathDebug()">模拟 Breath</button>
-  </div>
-
-  <div class="breath-info" id="breath-info" style="display:none"></div>
-  <div id="breath-results">
-    <div class="loading">输入 query 后点击「模拟 Breath」查看评分链路</div>
   </div>
 </div>
 
@@ -1024,7 +936,6 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     const target = tab.dataset.tab;
     document.getElementById('list-view').style.display = target === 'list' ? '' : 'none';
-    document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
     document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
@@ -1073,32 +984,89 @@ function updateStats() {
     total + ' 桶 · ' + pinned + ' 钉选 · ' + feels + ' feel · ' + resolved + ' 已解决 · ' + digested + ' 已消化';
 }
 
+var TYPE_FILTERS = [
+  { key: 'all', label: '全部', icon: null },
+  { key: 'pinned', label: '钉选', icon: 'pin' },
+  { key: 'feel', label: 'Feel', icon: 'droplet' },
+  { key: 'unresolved', label: '未解决', icon: 'zap' },
+  { key: 'digested', label: '已消化', icon: 'leaf' },
+  { key: 'archived', label: '归档', icon: 'archive' },
+];
+var DOMAIN_TOP_N = 6;
+var domainOverflowOpen = false;
+var filtersBound = false;
+
 function buildFilters() {
-  const domains = new Set();
-  allBuckets.forEach(b => (b.domain || []).forEach(d => domains.add(d)));
-  const filters = document.getElementById('filters');
-  const types = [
-    { key: 'all', label: '全部' },
-    { key: 'pinned', label: '📌 钉选' },
-    { key: 'feel', label: '🫧 Feel' },
-    { key: 'unresolved', label: '⚡ 未解决' },
-    { key: 'digested', label: '🌿 已消化' },
-    { key: 'archived', label: '📦 归档' },
-  ];
-  filters.innerHTML = types.map(function(t) {
-    return '<button class="filter-btn ' + (t.key === currentFilter ? 'active' : '') + '" data-filter="' + t.key + '">' + t.label + '</button>';
-  }).join('') + Array.from(domains).slice(0, 10).map(function(d) {
-    return '<button class="filter-btn ' + ('domain:' + d === currentFilter ? 'active' : '') + '" data-filter="domain:' + d + '">' + d + '</button>';
+  // 按桶数倒序排域
+  var domainCounts = {};
+  allBuckets.forEach(function(b) {
+    (b.domain || []).forEach(function(d) {
+      domainCounts[d] = (domainCounts[d] || 0) + 1;
+    });
+  });
+  var sortedDomains = Object.keys(domainCounts).sort(function(a, b) {
+    return domainCounts[b] - domainCounts[a];
+  });
+  var topDomains = sortedDomains.slice(0, DOMAIN_TOP_N);
+  var restDomains = sortedDomains.slice(DOMAIN_TOP_N);
+
+  // 当前激活的域如果落在折叠区，自动展开以便看见
+  if (currentFilter && currentFilter.indexOf('domain:') === 0) {
+    var activeDomain = currentFilter.slice(7);
+    if (restDomains.indexOf(activeDomain) !== -1) domainOverflowOpen = true;
+  }
+
+  // 类型行
+  document.getElementById('type-filters').innerHTML = TYPE_FILTERS.map(function(t) {
+    var iconHtml = t.icon ? '<i data-lucide="' + t.icon + '" style="width:13px;height:13px;"></i>' : '';
+    return '<button class="filter-btn ' + (t.key === currentFilter ? 'active' : '') + '" data-filter="' + t.key + '">' + iconHtml + t.label + '</button>';
   }).join('');
 
-  filters.addEventListener('click', function(e) {
-    var btn = e.target.closest('.filter-btn');
-    if (!btn) return;
-    filters.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
-    btn.classList.add('active');
-    currentFilter = btn.dataset.filter;
-    renderBuckets(filterBuckets(allBuckets));
-  });
+  // 域行：top N + (可选)折叠按钮 + (展开时)余下
+  var domainHtml = topDomains.map(function(d) {
+    return '<button class="filter-btn ' + ('domain:' + d === currentFilter ? 'active' : '') + '" data-filter="domain:' + d + '">' + d + '</button>';
+  }).join('');
+  if (restDomains.length > 0) {
+    var arrow = domainOverflowOpen ? '▴' : '▾';
+    domainHtml += '<button class="filter-btn filter-overflow" data-overflow="toggle">其他 ' + restDomains.length + ' 个 ' + arrow + '</button>';
+    if (domainOverflowOpen) {
+      domainHtml += restDomains.map(function(d) {
+        return '<button class="filter-btn ' + ('domain:' + d === currentFilter ? 'active' : '') + '" data-filter="domain:' + d + '">' + d + '</button>';
+      }).join('');
+    }
+  }
+  document.getElementById('domain-filters').innerHTML = domainHtml;
+
+  if (!filtersBound) {
+    filtersBound = true;
+    document.querySelector('.filters-block').addEventListener('click', function(e) {
+      var btn = e.target.closest('.filter-btn');
+      if (!btn) return;
+      if (btn.dataset.overflow === 'toggle') {
+        domainOverflowOpen = !domainOverflowOpen;
+        buildFilters();
+        return;
+      }
+      currentFilter = btn.dataset.filter;
+      buildFilters();
+      renderBuckets(filterBuckets(allBuckets));
+    });
+  }
+
+  updateFilterStatus();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function currentFilterLabel() {
+  var t = TYPE_FILTERS.find(function(t) { return t.key === currentFilter; });
+  if (t) return t.label;
+  if (currentFilter && currentFilter.indexOf('domain:') === 0) return '域 · ' + currentFilter.slice(7);
+  return '全部';
+}
+
+function updateFilterStatus() {
+  var cur = document.getElementById('filter-current-text');
+  if (cur) cur.textContent = currentFilterLabel();
 }
 
 function filterBuckets(buckets) {
@@ -1117,12 +1085,15 @@ function filterBuckets(buckets) {
 
 function renderBuckets(buckets) {
   var list = document.getElementById('bucket-list');
+  var cnt = document.getElementById('filter-count');
+  if (cnt) cnt.textContent = buckets.length + ' / ' + allBuckets.length;
   if (!buckets.length) {
     list.innerHTML = '<div class="loading">没有记忆桶</div>';
     return;
   }
   list.innerHTML = buckets.map(function(b) {
-    var icon = b.pinned ? '📌' : b.type === 'feel' ? '🫧' : b.digested ? '🌿' : b.resolved ? '💤' : '💭';
+    var iconName = b.pinned ? 'pin' : b.type === 'feel' ? 'droplet' : b.digested ? 'leaf' : b.resolved ? 'moon' : 'circle';
+    var icon = '<i data-lucide="' + iconName + '" style="width:14px;height:14px;"></i>';
     var vPos = Math.round(b.valence * 100);
     var modelV = b.model_valence != null ? ' → V' + b.model_valence.toFixed(1) : '';
     var timeAgo = formatTimeAgo(b.last_active || b.created);
@@ -1135,10 +1106,11 @@ function renderBuckets(buckets) {
       '<span class="score" onclick="showDetail(\'' + b.id + '\')">' + b.score.toFixed(2) + '</span>' +
       '<span class="time" onclick="showDetail(\'' + b.id + '\')">' + timeAgo + '</span>' +
       '<span class="preview" onclick="showDetail(\'' + b.id + '\')">' + esc(b.content_preview) + '</span>' +
-      '<button class="row-del" title="删除" onclick="event.stopPropagation();deleteBucket(\'' + b.id + '\',\'' + esc(b.name).replace(/'/g,"\\'") + '\')" style="background:none;border:none;color:var(--negative);cursor:pointer;font-size:14px;padding:0 6px;">🗑</button>' +
+      '<button class="row-del" title="删除" onclick="event.stopPropagation();deleteBucket(\'' + b.id + '\',\'' + esc(b.name).replace(/'/g,"\\'") + '\')" style="background:none;border:none;color:var(--negative);cursor:pointer;padding:0 6px;display:inline-flex;align-items:center;"><i data-lucide="trash-2" style="width:13px;height:13px;"></i></button>' +
     '</div>';
   }).join('');
   onRowCheck();
+  if (window.lucide) window.lucide.createIcons();
 }
 
 // --- 删除 / 编辑 / 批量 ---
@@ -1300,86 +1272,6 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     document.getElementById('search-input').focus();
   }
-});
-
-async function runBreathDebug() {
-  var query = document.getElementById('breath-query').value.trim();
-  var valence = document.getElementById('breath-valence').value;
-  var arousal = document.getElementById('breath-arousal').value;
-  var results = document.getElementById('breath-results');
-  var info = document.getElementById('breath-info');
-
-  results.innerHTML = '<div class="loading">计算中…</div>';
-
-  var url = BASE + '/api/breath-debug?q=' + encodeURIComponent(query);
-  if (valence) url += '&valence=' + valence;
-  if (arousal) url += '&arousal=' + arousal;
-
-  try {
-    var res = await fetch(url);
-    var data = await res.json();
-
-    document.getElementById('fs-input').classList.add('active');
-    document.getElementById('fs-cand-n').textContent = data.total_candidates + ' 桶';
-    document.getElementById('fs-candidates').classList.add('active');
-    document.getElementById('fs-scoring').classList.add('active');
-    document.getElementById('fs-thresh-n').textContent = '≥' + data.threshold + ' → ' + data.passed_count + ' 通过';
-    document.getElementById('fs-threshold').classList.add('active');
-    document.getElementById('fs-sort').classList.add('active');
-
-    var w = data.weights;
-    info.style.display = '';
-    info.innerHTML =
-      '<strong>权重配置</strong>&nbsp;' +
-      'topic=<code>' + w.topic + '</code> emotion=<code>' + w.emotion + '</code> ' +
-      'time=<code>' + w.time + '</code> importance=<code>' + w.importance + '</code>' +
-      ' &nbsp;|&nbsp; 阈值=<code>' + data.threshold + '</code>' +
-      ' &nbsp;|&nbsp; 候选=<code>' + data.total_candidates + '</code> 桶' +
-      ' → 通过=<code>' + data.passed_count + '</code> 桶' +
-      (query ? '' : ' &nbsp;|&nbsp; <em>未输入 query，topic 分数全为 0</em>');
-
-    if (!data.results.length) {
-      results.innerHTML = '<div class="loading">无结果</div>';
-      return;
-    }
-
-    var barColors = {
-      topic: '#2F4F4F',
-      emotion: '#8B6A6A',
-      time: '#9A7B4F',
-      importance: '#4A7C59',
-    };
-
-    results.innerHTML = data.results.map(function(r, i) {
-      var s = r.scores;
-      var passed = r.passed_threshold;
-      var icon = r.pinned ? '📌' : r.resolved ? '💤' : r.type === 'feel' ? '🫧' : '💭';
-      var bars = Object.entries(s).map(function(entry) {
-        var key = entry[0], val = entry[1];
-        var pct = Math.round(val * 100);
-        var wt = r.weights[key];
-        return '<div class="score-bar-group">' +
-          '<div class="score-bar-label"><span>' + key + '×' + wt + '</span><span>' + val.toFixed(2) + '</span></div>' +
-          '<div class="score-bar-track">' +
-            '<div class="score-bar-fill" style="width:' + pct + '%;background:' + barColors[key] + '"></div>' +
-          '</div>' +
-        '</div>';
-      }).join('');
-
-      return '<div class="score-row" title="' + esc(r.name) + '">' +
-        '<span class="rank">' + (i < 9 ? '0' : '') + (i + 1) + '</span>' +
-        '<span class="name">' + icon + ' ' + esc(r.name) + '</span>' +
-        '<div class="score-bars">' + bars + '</div>' +
-        '<span class="score-final ' + (passed ? 'score-pass' : 'score-fail') + '">' + r.normalized.toFixed(1) + (r.resolved ? '<small>×0.3</small>' : '') + '</span>' +
-      '</div>';
-    }).join('');
-  } catch (e) {
-    results.innerHTML = '<div class="loading">请求失败: ' + e.message + '</div>';
-  }
-}
-
-document.getElementById('breath-query').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') runBreathDebug();
 });
 
 async function loadConfig() {

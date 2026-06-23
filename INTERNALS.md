@@ -124,7 +124,6 @@
 | `/api/buckets` | GET | 桶列表 🔒 |
 | `/api/bucket/{id}` | GET | 桶详情 🔒 |
 | `/api/search?q=` | GET | 搜索 🔒 |
-| `/api/breath-debug` | GET | 评分调试 🔒 |
 | `/api/config` | GET | 配置查看（key 脱敏）🔒 |
 | `/api/config` | POST | 热更新配置 🔒 |
 | `/api/status` | GET | 系统状态（版本/桶数/引擎）🔒 |
@@ -148,12 +147,11 @@
 - Session：内存字典（服务重启失效），cookie `ombre_session`（HttpOnly, SameSite=Lax, 7天）
 - `/health`, `/breath-hook`, `/dream-hook`, `/mcp*` 路径不受保护（公开）
 
-**Dashboard（5 个 Tab）**
+**Dashboard（4 个 Tab）**
 1. 记忆桶列表：6 种过滤器 + 主题域过滤 + 搜索 + 详情面板
-2. Breath 模拟：输入参数 → 可视化五步流程 → 四维条形图
-3. 配置：热更新脱水/embedding/合并参数
-4. 导入：历史对话拖拽上传 → 分块处理进度条 → 词频规律分析 → 导入结果审阅
-6. 设置：服务状态监控、修改密码、退出登录
+2. 配置：热更新脱水/embedding/合并参数
+3. 导入：历史对话拖拽上传 → 分块处理进度条 → 词频规律分析 → 导入结果审阅
+4. 设置：服务状态监控、修改密码、退出登录
 
 **部署选项**
 1. 本地 stdio（`python server.py`）
