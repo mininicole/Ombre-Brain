@@ -90,6 +90,9 @@ async def _fire_webhook(event: str, payload: dict) -> None:
     """
     if OMBRE_HOOK_SKIP or not OMBRE_HOOK_URL:
         return
+    if not OMBRE_HOOK_URL.startswith(("http://", "https://")):
+        logger.warning(f"OMBRE_HOOK_URL rejected: only http/https allowed (got {OMBRE_HOOK_URL[:40]!r})")
+        return
     try:
         body = {
             "event": event,
@@ -781,9 +784,9 @@ async def _merge_or_create(
                 await bucket_mgr.update(
                     bucket["id"],
                     content=merged,
-                    tags=list(set(bucket["metadata"].get("tags", []) + tags)),
-                    importance=max(bucket["metadata"].get("importance", 5), importance),
-                    domain=list(set(bucket["metadata"].get("domain", []) + domain)),
+                    tags=list(set((bucket["metadata"].get("tags") or []) + tags)),
+                    importance=max(bucket["metadata"].get("importance") or 5, importance),
+                    domain=list(set((bucket["metadata"].get("domain") or []) + domain)),
                     valence=merged_valence,
                     arousal=merged_arousal,
                 )
@@ -846,10 +849,10 @@ async def breath(
             return f"记忆系统暂时无法访问: {e}"
         filtered = [
             b for b in all_buckets
-            if int(b["metadata"].get("importance", 0)) >= importance_min
+            if int(b["metadata"].get("importance") or 0) >= importance_min
             and b["metadata"].get("type") not in ("feel",)
         ]
-        filtered.sort(key=lambda b: int(b["metadata"].get("importance", 0)), reverse=True)
+        filtered.sort(key=lambda b: int(b["metadata"].get("importance") or 0), reverse=True)
         filtered = filtered[:20]
         if not filtered:
             return f"没有重要度 >= {importance_min} 的记忆。"
@@ -929,8 +932,8 @@ async def breath(
         # --- 冷启动检测：从未被访问过且重要度>=8的桶优先插入最前面（最多2个）---
         cold_start = [
             b for b in unresolved
-            if int(b["metadata"].get("activation_count", 0)) == 0
-            and int(b["metadata"].get("importance", 0)) >= 8
+            if int(b["metadata"].get("activation_count") or 0) == 0
+            and int(b["metadata"].get("importance") or 0) >= 8
         ][:2]
         cold_start_ids = {b["id"] for b in cold_start}
         # Merge: cold_start first, then scored (excluding duplicates)
@@ -1131,7 +1134,7 @@ async def breath(
             # --- Memory reconstruction: shift displayed valence by current mood ---
             # --- 记忆重构：根据当前情绪微调展示层 valence（±0.1）---
             if q_valence is not None and "valence" in clean_meta:
-                original_v = float(clean_meta.get("valence", 0.5))
+                original_v = float(clean_meta.get("valence") or 0.5)
                 shift = (q_valence - 0.5) * 0.2  # ±0.1 max shift
                 clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
             summary = await dehydrator.dehydrate(strip_wikilinks(bucket["content"]), clean_meta)
@@ -1901,7 +1904,7 @@ async def api_breath_debug(request):
                 topic = bucket_mgr._calc_topic_score(query, bucket) if query else 0.0
                 emotion = bucket_mgr._calc_emotion_score(q_valence, q_arousal, meta)
                 time_s = bucket_mgr._calc_time_score(meta)
-                imp = max(1, min(10, int(meta.get("importance", 5)))) / 10.0
+                imp = max(1, min(10, int(meta.get("importance") or 5))) / 10.0
 
                 raw_total = (
                     topic * w["topic"]
@@ -2361,9 +2364,7 @@ async def api_import_review(request):
             elif action == "noise":
                 await bucket_mgr.update(bid, resolved=True, importance=1)
             elif action == "delete":
-                file_path = bucket_mgr._find_bucket_file(bid)
-                if file_path:
-                    os.remove(file_path)
+                await bucket_mgr.delete(bid)
             applied += 1
         except Exception as e:
             logger.warning(f"Review action failed for {bid}: {e}")
@@ -2384,8 +2385,8 @@ async def api_recall(request):
     try:
         body = await request.json()
         query = (body.get("query") or "").strip()
-        max_tokens = int(body.get("max_tokens", 2000))
-        max_results = int(body.get("max_results", 5))
+        max_tokens = int(body.get("max_tokens") or 2000)
+        max_results = int(body.get("max_results") or 5)
         result = await breath(
             query=query,
             max_tokens=max_tokens,
@@ -2406,7 +2407,7 @@ async def api_reclassify(request):
         body = await request.json() if request.method == "POST" else {}
     except Exception:
         body = {}
-    limit = int(body.get("limit", 100))
+    limit = int(body.get("limit") or 100)
     domain_filter = body.get("domain_filter", "未分类")
 
     try:
@@ -2544,12 +2545,12 @@ async def api_remember(request):
         result = await hold(
             content=content,
             feel=bool(body.get("feel", False)),
-            importance=int(body.get("importance", 5)),
+            importance=int(body.get("importance") or 5),
             pinned=bool(body.get("pinned", False)),
-            valence=float(body.get("valence", -1)),
-            arousal=float(body.get("arousal", -1)),
-            tags=str(body.get("tags", "")),
-            source_bucket=str(body.get("source_bucket", "")),
+            valence=float(body.get("valence") if body.get("valence") is not None else -1),
+            arousal=float(body.get("arousal") if body.get("arousal") is not None else -1),
+            tags=str(body.get("tags") or ""),
+            source_bucket=str(body.get("source_bucket") or ""),
         )
         return JSONResponse({"id": result})
     except Exception as e:

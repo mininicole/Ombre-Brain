@@ -638,12 +638,12 @@ class ImportEngine:
             if not isinstance(item, dict) or not item.get("content"):
                 continue
             try:
-                importance = max(1, min(10, int(item.get("importance", 5))))
+                importance = max(1, min(10, int(item.get("importance") or 5)))
             except (ValueError, TypeError):
                 importance = 5
             try:
-                valence = max(0.0, min(1.0, float(item.get("valence", 0.5))))
-                arousal = max(0.0, min(1.0, float(item.get("arousal", 0.3))))
+                valence = max(0.0, min(1.0, float(item.get("valence") or 0.5)))
+                arousal = max(0.0, min(1.0, float(item.get("arousal") or 0.3)))
             except (ValueError, TypeError):
                 valence, arousal = 0.5, 0.3
 
@@ -684,14 +684,14 @@ class ImportEngine:
                 try:
                     merged = await self.dehydrator.merge(bucket["content"], content)
                     self.state.data["api_calls"] += 1
-                    old_v = bucket["metadata"].get("valence", 0.5)
-                    old_a = bucket["metadata"].get("arousal", 0.3)
+                    old_v = bucket["metadata"].get("valence") or 0.5
+                    old_a = bucket["metadata"].get("arousal") or 0.3
                     await self.bucket_mgr.update(
                         bucket["id"],
                         content=merged,
-                        tags=list(set(bucket["metadata"].get("tags", []) + tags)),
-                        importance=max(bucket["metadata"].get("importance", 5), importance),
-                        domain=list(set(bucket["metadata"].get("domain", []) + domain)),
+                        tags=list(set((bucket["metadata"].get("tags") or []) + tags)),
+                        importance=max(bucket["metadata"].get("importance") or 5, importance),
+                        domain=list(set((bucket["metadata"].get("domain") or []) + domain)),
                         valence=round((old_v + valence) / 2, 2),
                         arousal=round((old_a + arousal) / 2, 2),
                     )

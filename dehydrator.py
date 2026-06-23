@@ -188,12 +188,12 @@ class Dehydrator:
         # --- SQLite 脱水缓存：content hash → summary ---
         db_path = os.path.join(config["buckets_dir"], "dehydration_cache.db")
         self.cache_db_path = db_path
-        self._init_cache_db()
+        self._cache_conn: sqlite3.Connection = self._init_cache_db()
 
-    def _init_cache_db(self):
-        """Create dehydration cache table if not exists."""
+    def _init_cache_db(self) -> sqlite3.Connection:
+        """Open (or create) the dehydration cache DB; return a persistent connection."""
         os.makedirs(os.path.dirname(self.cache_db_path), exist_ok=True)
-        conn = sqlite3.connect(self.cache_db_path)
+        conn = sqlite3.connect(self.cache_db_path, check_same_thread=False)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS dehydration_cache (
                 content_hash TEXT PRIMARY KEY,
@@ -203,37 +203,31 @@ class Dehydrator:
             )
         """)
         conn.commit()
-        conn.close()
+        return conn
 
     def _get_cached_summary(self, content: str) -> str | None:
         """Look up cached dehydration result by content hash."""
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        conn = sqlite3.connect(self.cache_db_path)
-        row = conn.execute(
+        row = self._cache_conn.execute(
             "SELECT summary FROM dehydration_cache WHERE content_hash = ?",
             (content_hash,)
         ).fetchone()
-        conn.close()
         return row[0] if row else None
 
     def _set_cached_summary(self, content: str, summary: str):
         """Store dehydration result in cache."""
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        conn = sqlite3.connect(self.cache_db_path)
-        conn.execute(
+        self._cache_conn.execute(
             "INSERT OR REPLACE INTO dehydration_cache (content_hash, summary, model) VALUES (?, ?, ?)",
             (content_hash, summary, self.model)
         )
-        conn.commit()
-        conn.close()
+        self._cache_conn.commit()
 
     def invalidate_cache(self, content: str):
         """Remove cached summary for specific content (call when bucket content changes)."""
         content_hash = hashlib.sha256(content.encode()).hexdigest()
-        conn = sqlite3.connect(self.cache_db_path)
-        conn.execute("DELETE FROM dehydration_cache WHERE content_hash = ?", (content_hash,))
-        conn.commit()
-        conn.close()
+        self._cache_conn.execute("DELETE FROM dehydration_cache WHERE content_hash = ?", (content_hash,))
+        self._cache_conn.commit()
 
     # ---------------------------------------------------------
     # Dehydrate: compress raw content into concise summary
@@ -364,10 +358,10 @@ class Dehydrator:
         header = ""
         if metadata and isinstance(metadata, dict):
             name = metadata.get("name", "未命名")
-            domains = ", ".join(metadata.get("domain", []))
+            domains = ", ".join(metadata.get("domain") or [])
             try:
-                valence = float(metadata.get("valence", 0.5))
-                arousal = float(metadata.get("arousal", 0.3))
+                valence = float(metadata.get("valence") or 0.5)
+                arousal = float(metadata.get("arousal") or 0.3)
             except (ValueError, TypeError):
                 valence, arousal = 0.5, 0.3
             header = f"📌 记忆桶: {name}"
@@ -492,8 +486,8 @@ class Dehydrator:
 
         # --- Validate and clamp value ranges / 校验并钳制数值范围 ---
         try:
-            valence = max(0.0, min(1.0, float(result.get("valence", 0.5))))
-            arousal = max(0.0, min(1.0, float(result.get("arousal", 0.3))))
+            valence = max(0.0, min(1.0, float(result.get("valence") or 0.5)))
+            arousal = max(0.0, min(1.0, float(result.get("arousal") or 0.3)))
         except (ValueError, TypeError):
             valence, arousal = 0.5, 0.3
 
@@ -602,12 +596,12 @@ class Dehydrator:
             if not isinstance(item, dict) or not item.get("content"):
                 continue
             try:
-                importance = max(1, min(10, int(item.get("importance", 5))))
+                importance = max(1, min(10, int(item.get("importance") or 5)))
             except (ValueError, TypeError):
                 importance = 5
             try:
-                valence = max(0.0, min(1.0, float(item.get("valence", 0.5))))
-                arousal = max(0.0, min(1.0, float(item.get("arousal", 0.3))))
+                valence = max(0.0, min(1.0, float(item.get("valence") or 0.5)))
+                arousal = max(0.0, min(1.0, float(item.get("arousal") or 0.3)))
             except (ValueError, TypeError):
                 valence, arousal = 0.5, 0.3
 

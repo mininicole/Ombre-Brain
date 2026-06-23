@@ -90,11 +90,11 @@ async def reclassify():
             print(f"  X API失败 {basename}: {e}")
             continue
 
-        new_domain = result.get("domain", ["未分类"])[:3]
-        new_tags = result.get("tags", [])[:5]
+        new_domain = (result.get("domain") or ["未分类"])[:3]
+        new_tags = (result.get("tags") or [])[:5]
         new_name = sanitize(result.get("suggested_name", "") or name)
-        new_valence = max(0.0, min(1.0, float(result.get("valence", 0.5))))
-        new_arousal = max(0.0, min(1.0, float(result.get("arousal", 0.3))))
+        new_valence = max(0.0, min(1.0, float(result.get("valence") or 0.5)))
+        new_arousal = max(0.0, min(1.0, float(result.get("arousal") or 0.3)))
 
         post.metadata["domain"] = new_domain
         post.metadata["tags"] = new_tags
