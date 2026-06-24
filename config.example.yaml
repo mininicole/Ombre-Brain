@@ -67,8 +67,8 @@ decay:
 # If api_key is omitted, reuses the same API key (OMBRE_API_KEY) and base_url from dehydration config
 # 你可以把 embedding 独立配置；若 api_key 留空，复用脱水配置的 API key 和 base_url
 embedding:
-  enabled: true                   # Enable embedding / 启用向量化
-  model: "gemini-embedding-001"   # Embedding model / 向量化模型
+  enabled: false                  # 关掉：base_url 默认 fallback 到 DeepSeek 但 model 是 Gemini 的，一直 404；日常用不上语义检索就先停了
+  model: "gemini-embedding-001"   # 想启用需先 fly secrets set OMBRE_EMBED_API_KEY=<gemini key> OMBRE_EMBED_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
   # base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
   # api_key: ""                  
 
