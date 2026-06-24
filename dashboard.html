@@ -208,6 +208,38 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .sort-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: inset 1px 1px 3px var(--shadow-dark-subtle);
+  }
+  .sort-group .filter-label {
+    margin-right: 4px;
+    margin-left: 8px;
+  }
+  .sort-btn {
+    padding: 3px 12px;
+    font-size: 11px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s, background 0.15s, box-shadow 0.15s;
+  }
+  .sort-btn:hover { color: var(--text); }
+  .sort-btn.active {
+    background: var(--accent);
+    color: #FDFCF0;
+    box-shadow: inset 2px 2px 4px rgba(0,0,0,0.18), inset -1px -1px 3px rgba(255,255,255,0.08);
+  }
+
   .bucket-list { display: flex; flex-direction: column; gap: 8px; }
   .bucket-row {
     display: grid;
@@ -536,6 +568,11 @@
     <div class="filter-status">
       <span class="filter-label">当前</span>
       <span id="filter-current-text">全部</span>
+      <span class="sort-group" id="sort-group">
+        <span class="filter-label" style="min-width:auto;">排序</span>
+        <button class="sort-btn active" data-sort="created">新建桶</button>
+        <button class="sort-btn" data-sort="importance">重要</button>
+      </span>
       <span class="filter-count" id="filter-count">—</span>
     </div>
   </div>
@@ -929,6 +966,33 @@ async function authFetch(url, options) {
 const BASE = location.origin;
 let allBuckets = [];
 let currentFilter = 'all';
+let currentSort = 'created';   // created | importance
+let sortBound = false;
+
+function sortBuckets(buckets) {
+  var arr = buckets.slice();
+  if (currentSort === 'importance') {
+    arr.sort(function(a, b) { return (b.importance || 0) - (a.importance || 0); });
+  } else {
+    arr.sort(function(a, b) { return (b.created || '').localeCompare(a.created || ''); });
+  }
+  return arr;
+}
+
+function bindSortGroup() {
+  if (sortBound) return;
+  sortBound = true;
+  var group = document.getElementById('sort-group');
+  if (!group) return;
+  group.addEventListener('click', function(e) {
+    var btn = e.target.closest('.sort-btn');
+    if (!btn) return;
+    group.querySelectorAll('.sort-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    currentSort = btn.dataset.sort;
+    renderBuckets(filterBuckets(allBuckets));
+  });
+}
 
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -1084,6 +1148,8 @@ function filterBuckets(buckets) {
 }
 
 function renderBuckets(buckets) {
+  bindSortGroup();
+  buckets = sortBuckets(buckets);
   var list = document.getElementById('bucket-list');
   var cnt = document.getElementById('filter-count');
   if (cnt) cnt.textContent = buckets.length + ' / ' + allBuckets.length;
