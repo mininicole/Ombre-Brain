@@ -883,6 +883,19 @@ async def breath(
             logger.error(f"Failed to list buckets for surfacing / 浮现列桶失败: {e}")
             return "记忆系统暂时无法访问。"
 
+        # --- Domain isolation (surfacing mode) ---
+        # 浮现模式也要按 domain 隔离，否则 gale 调 surface 会拿到 evan 的桶。
+        # 与 search 分支行为一致：传 domain 即严格过滤，不回退全库。
+        surfacing_domain_filter = [d.strip() for d in domain.split(",") if d.strip()] or None
+        if surfacing_domain_filter:
+            target_set = {d.lower() for d in surfacing_domain_filter}
+            def _bucket_matches_domain(b):
+                doms = b["metadata"].get("domain") or []
+                if isinstance(doms, str):
+                    doms = [doms]
+                return bool({str(d).lower() for d in doms} & target_set)
+            all_buckets = [b for b in all_buckets if _bucket_matches_domain(b)]
+
         # --- Pinned/protected buckets: always surface as core principles ---
         # --- 钉选桶：作为核心准则，始终浮现 ---
         pinned_buckets = [
@@ -2312,31 +2325,9 @@ async def api_import_review(request):
     return JSONResponse({"applied": applied, "errors": errors})
 
 
-# =============================================================
-# Simple HTTP API for non-MCP clients (e.g. Evan Telegram bot)
-# 给非 MCP 客户端用的简单 HTTP 接口
-# =============================================================
-@mcp.custom_route("/api/recall", methods=["POST"])
-async def api_recall(request):
-    """Query memories. POST body: {"query": "...", "max_tokens": 2000, "max_results": 5}
-    Returns: {"text": "formatted memory string"}"""
-    from starlette.responses import JSONResponse
-    try:
-        body = await request.json()
-        query = (body.get("query") or "").strip()
-        max_tokens = int(body.get("max_tokens") or 2000)
-        max_results = int(body.get("max_results") or 5)
-        result = await breath(
-            query=query,
-            max_tokens=max_tokens,
-            max_results=max_results,
-        )
-        return JSONResponse({"text": result})
-    except Exception as e:
-        logger.error(f"/api/recall failed: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
+# /api/recall 已在前文 L588 注册（带 domain 隔离 + surface_dreams 选项 + 500 兜底），
+# 这里的旧版重复注册已删除——FastMCP 同 path 注册谁赢取决于实现细节，
+# 留着两份等于埋雷。
 @mcp.custom_route("/api/reclassify", methods=["POST"])
 async def api_reclassify(request):
     """重新打标所有"未分类"且名字=hex_id 的桶（之前打标失败的）。
