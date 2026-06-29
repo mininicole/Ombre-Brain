@@ -595,8 +595,9 @@ async def api_recall(request):
     if not isinstance(body, dict):
         return JSONResponse({"error": "json body must be an object"}, status_code=400)
     query = str(body.get("query") or "").strip()
-    if not query:
-        return JSONResponse({"text": ""})
+    # 空 query 不再短路——下沉到 breath() 走浮现模式，
+    # 拉钉桶 + 最近未解决桶（受 domain 隔离）。调用方（如 gale-bot）
+    # 双路调用时需要这条路返回内容。
     try:
         max_tokens = int(body.get("max_tokens") or 1500)
     except (TypeError, ValueError):
