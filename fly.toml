@@ -9,6 +9,9 @@ primary_region = 'nrt'
 [env]
   OMBRE_TRANSPORT = 'streamable-http'
   OMBRE_BUCKETS_DIR = '/app/buckets'
+  # /chat 的摘要小工（思考摘要/工具标题）每个都是独立 claude CLI，
+  # 512MB 机器养不起三个引擎——关掉，只留主对话（2026-07-02）
+  CHAT_DISABLE_SUMMARIES = '1'
   # Night-Fall 浮现调参：默认 0.62 太严，开窗几乎只走 affect 单通道，
   # 把门槛降到 0.50（affect 单轴偏差容忍从 ±0.27 放宽到 ±0.35），
   # 自发概率 0.02 → 0.06，attempt 跟着降以保持"低信号不消耗机会"语义。

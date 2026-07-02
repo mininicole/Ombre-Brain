@@ -256,7 +256,15 @@ async def stream_chat(
         yield item
 
 
+# 小内存部署开关：摘要小工每个都是独立的 claude CLI 进程，
+# 512MB 的机器同时养三个引擎会把主对话挤到超时。开了这个开关，
+# 三个摘要函数直接返回空串，前端自带降级显示，主对话不受影响。
+CHAT_DISABLE_SUMMARIES = os.environ.get("CHAT_DISABLE_SUMMARIES", "").strip().lower() in ("1", "true", "yes")
+
+
 async def summarize_thinking(thinking: str) -> str:
+    if CHAT_DISABLE_SUMMARIES:
+        return ""
     async with _haiku_sem:
         logger = logging.getLogger(__name__)
         options = ClaudeAgentOptions(
@@ -310,6 +318,8 @@ TRACE_SUMMARY_PROMPT = (
 
 
 async def summarize_traces(traces: list[dict]) -> str:
+    if CHAT_DISABLE_SUMMARIES:
+        return ""
     tool_results = {
         t.get("tool_use_id"): t
         for t in traces
@@ -380,6 +390,8 @@ async def summarize_traces(traces: list[dict]) -> str:
 
 
 async def summarize_tool_use(tool_name: str, tool_input, tool_output: str) -> str:
+    if CHAT_DISABLE_SUMMARIES:
+        return ""
     try:
         input_str = tool_input if isinstance(tool_input, str) else json.dumps(tool_input, ensure_ascii=False)
     except Exception:
