@@ -1,0 +1,8 @@
+# Fly 部署用的精简依赖：不装 chromadb/jieba/rank-bm25——
+# 本地记忆检索服务在这套部署里不跑，记忆走 ombre MCP。
+anthropic>=0.113.0
+claude-agent-sdk==0.2.97
+fastapi
+python-multipart
+python-dotenv
+uvicorn[standard]

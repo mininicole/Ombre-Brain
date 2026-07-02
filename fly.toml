@@ -39,7 +39,9 @@ primary_region = 'nrt'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '512mb'
+  # 2026-07-02 512mb → 1gb：/chat 页的 ChatNest + Claude Code CLI（node）
+  # 跟 ombre 同容器跑，512 不够用
+  memory = '1gb'
 
 [mounts]
   source = 'ombre_data'

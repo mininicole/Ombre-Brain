@@ -12,13 +12,21 @@ WORKDIR /app
 
 # Night-Fall pip-installs from GitHub, needs git
 # Night-Fall 通过 git+https 安装，需要 git
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+# nodejs/npm 是给 Claude Code CLI 的（ChatNest 聊天后端跑在 Agent SDK 上）
+RUN apt-get update && apt-get install -y --no-install-recommends git nodejs npm \
     && rm -rf /var/lib/apt/lists/*
+
+# Claude Code CLI：ChatNest 的运行时，认证走 CLAUDE_CODE_OAUTH_TOKEN（fly secrets）
+RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
 
 # Install dependencies first (leverage Docker cache)
 # 先装依赖（利用 Docker 缓存）
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# ChatNest 依赖（精简版，不含本地向量检索那套）
+COPY chatnest/requirements-fly.txt ./chatnest-requirements.txt
+RUN pip install --no-cache-dir -r chatnest-requirements.txt
 
 # Night-Fall extension: dream lifecycle + breath-gated auto-surface
 # Night-Fall 扩展：梦境生命周期 + breath 自动浮梦
@@ -33,6 +41,11 @@ COPY play/ ./play/
 # 全靠 fly env vars 覆盖（dehydration / embedding / Night-Fall）。
 # 本地 config.yaml 在 .gitignore 里，CI 拉不到——所以直接用 example。
 COPY config.example.yaml ./config.yaml
+
+# ChatNest（/chat 聊天页）：代码进镜像，数据（对话库/上传/资料）在卷上
+COPY chatnest/ ./chatnest/
+COPY start.sh .
+RUN chmod +x start.sh
 
 # Persistent mount point: bucket data
 # (Night-Fall stores dreams under $OMBRE_BUCKETS_DIR/night_fall automatically)
@@ -49,6 +62,13 @@ ENV OMBRE_HOME=/app
 
 EXPOSE 8000
 
-# Launch via Night-Fall: loads Ombre, registers night_fall tool, runs transport
-# Night-Fall launcher 启动：加载 Ombre + 注册 night_fall 工具 + 跑 transport
-CMD ["python", "-m", "night_fall.launcher"]
+# ChatNest 数据目录/会话目录固定到卷上，重新部署不丢对话
+ENV AGENT_APP_ROOT=/app/buckets/chatnest
+ENV MODELS_FILE=/app/chatnest/models.json
+ENV CLAUDE_CONFIG_DIR=/app/buckets/.claude
+ENV CLAUDE_SESSION_DIR=/app/buckets/.claude/projects
+ENV OMBRE_MCP_URL=http://127.0.0.1:8000/mcp/
+ENV EVAN_PROMPT_FILE=/app/buckets/chatnest/evan-prompt.md
+
+# start.sh 同时拉起 ChatNest（8787，仅容器内）和 Ombre/Night-Fall（8000，对外）
+CMD ["./start.sh"]

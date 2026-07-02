@@ -20,6 +20,8 @@ on:
       - 'letters.html'
       - 'evan.html'
       - 'play/**'
+      - 'chatnest/**'
+      - 'start.sh'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 

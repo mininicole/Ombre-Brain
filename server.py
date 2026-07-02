@@ -2742,6 +2742,73 @@ async def play_asset(request):
     return FileResponse(path, media_type=_PLAY_ASSET_TYPES[ext])
 
 
+# --- /chat：ChatNest 聊天页反向代理 ---
+# ChatNest 是同容器里的第二个进程（uvicorn，默认 127.0.0.1:8787），
+# 这里只做传话：/chat/xxx → chatnest 的 /xxx。登录由 ChatNest 自己的
+# CHAT_PASSWORD 负责，不走 ombre 的 cookie session，也不在 Bearer 保护名单里。
+# 流式响应（/api/chat 的 SSE）必须逐块透传，不能整段缓冲。
+CHATNEST_PORT = int(os.environ.get("CHATNEST_PORT", "8787") or "8787")
+_CHATNEST_BASE = f"http://127.0.0.1:{CHATNEST_PORT}"
+_chatnest_client: "httpx.AsyncClient | None" = None
+_CHAT_HOP_HEADERS = {"host", "content-length", "connection", "transfer-encoding", "accept-encoding"}
+
+
+def _get_chatnest_client() -> httpx.AsyncClient:
+    global _chatnest_client
+    if _chatnest_client is None:
+        _chatnest_client = httpx.AsyncClient(
+            base_url=_CHATNEST_BASE,
+            # read=None：/api/chat 是长流式，不能设读超时
+            timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
+        )
+    return _chatnest_client
+
+
+@mcp.custom_route("/chat", methods=["GET"])
+async def chat_page_redirect(request):
+    from starlette.responses import RedirectResponse
+    # 必须带尾斜杠，前端资源用的是相对路径
+    return RedirectResponse(url="/chat/")
+
+
+@mcp.custom_route("/chat/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def chat_proxy(request):
+    # {path:path} 匹配空串，所以 /chat/ 本身也走这里
+    from starlette.background import BackgroundTask
+    from starlette.responses import HTMLResponse, StreamingResponse
+
+    upstream_path = "/" + request.path_params.get("path", "")
+    if request.url.query:
+        upstream_path += "?" + request.url.query
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _CHAT_HOP_HEADERS}
+    client = _get_chatnest_client()
+    try:
+        upstream_req = client.build_request(
+            request.method,
+            upstream_path,
+            headers=headers,
+            content=request.stream(),
+        )
+        upstream = await client.send(upstream_req, stream=True)
+    except httpx.HTTPError:
+        logger.warning("chatnest 反代失败（进程没起来？）", exc_info=True)
+        return HTMLResponse(
+            "<meta charset='utf-8'><p style='font-family:sans-serif;padding:2em'>"
+            "聊天服务暂时没醒，等一分钟再刷新试试。</p>",
+            status_code=502,
+        )
+    resp_headers = {
+        k: v for k, v in upstream.headers.items()
+        if k.lower() not in ("content-length", "transfer-encoding", "connection")
+    }
+    return StreamingResponse(
+        upstream.aiter_raw(),
+        status_code=upstream.status_code,
+        headers=resp_headers,
+        background=BackgroundTask(upstream.aclose),
+    )
+
+
 # --- 碎碎念：Evan 的主动消息记录 + 当前 bio（来自 evan-bot 的 state gist）---
 _musings_cache = {"ts": 0.0, "data": None}
 
