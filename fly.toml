@@ -37,11 +37,14 @@ primary_region = 'nrt'
     method = 'GET'
     path = '/health'
 
+# 2026-07-02 加 swap：/chat 的 ChatNest + Claude Code CLI 跟 ombre 同容器，
+# 512MB 物理内存不够峰值用，但预算上限 $5/月不能升配——
+# 用免费 swap 兜住峰值（CLI 大部分时间在等模型响应，换出去无感）
+swap_size_mb = 1024
+
 [[vm]]
   size = 'shared-cpu-1x'
-  # 2026-07-02 512mb → 1gb：/chat 页的 ChatNest + Claude Code CLI（node）
-  # 跟 ombre 同容器跑，512 不够用
-  memory = '1gb'
+  memory = '512mb'
 
 [mounts]
   source = 'ombre_data'
