@@ -827,16 +827,16 @@ async def _merge_or_create(
 # 有参数：按关键词+情感坐标检索记忆
 # =============================================================
 @mcp.tool()
-async def breath(
+async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（深深拍板）
     query: str = "",
-    max_tokens: int = 10000,
+    max_tokens: int = 5000,
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
-    max_results: int = 10,
+    max_results: int = 5,
     importance_min: int = -1,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认10,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认5,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
