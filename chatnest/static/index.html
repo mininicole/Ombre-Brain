@@ -224,7 +224,7 @@ body.sidebar-action-open .rename-dialog input{-webkit-user-select:text;user-sele
   body{background:var(--claude-sidebar-bg)}
   .topbar{padding-left:max(env(safe-area-inset-left),var(--topbar-side-inset));padding-right:max(env(safe-area-inset-right),var(--topbar-side-inset))}
 }
-</style>
+.mobile-sidebar-titlerow{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex:none}.mobile-sidebar-titlerow .mobile-sidebar-title{margin-bottom:0}.sidebar-home-link{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;color:var(--claude-text-primary)}.sidebar-home-link:hover{background:var(--claude-selected-bg)}.sidebar-home-link svg{width:20px;height:20px;stroke-width:1.7}</style>
 <link rel="stylesheet" href="static/design-system.css">
 <script src="marked.min.js?v=2"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
@@ -282,7 +282,7 @@ body.sidebar-action-open .rename-dialog input{-webkit-user-select:text;user-sele
 <div class="overlay" id="drawerOverlay" aria-hidden="true" inert></div>
 <aside id="drawer" aria-hidden="true" inert>
   <div class="mobile-sidebar-inner">
-    <h1 class="mobile-sidebar-title">AI 聊天</h1>
+    <div class="mobile-sidebar-titlerow"><h1 class="mobile-sidebar-title">AI 聊天</h1><a class="sidebar-home-link" href="/" aria-label="返回首页"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M12 12.6c-.9-1.1-2.6-.8-2.6.8 0 1.2 1.5 2.1 2.6 2.9 1.1-.8 2.6-1.7 2.6-2.9 0-1.6-1.7-1.9-2.6-.8z" fill="currentColor" stroke="none"/></svg></a></div>
     <nav class="mobile-sidebar-nav" aria-label="导航">
       <button class="mobile-sidebar-nav-item" id="drawerChats"><span class="mobile-sidebar-nav-icon" data-icon="chats"></span><span>Chats</span></button>
       <button class="mobile-sidebar-nav-item" type="button"><span class="mobile-sidebar-nav-icon" data-icon="projects"></span><span>Projects</span></button>
