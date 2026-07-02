@@ -2771,7 +2771,7 @@ async def chat_page_redirect(request):
     return RedirectResponse(url="/chat/")
 
 
-@mcp.custom_route("/chat/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+@mcp.custom_route("/chat/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def chat_proxy(request):
     # {path:path} 匹配空串，所以 /chat/ 本身也走这里
     from starlette.background import BackgroundTask
