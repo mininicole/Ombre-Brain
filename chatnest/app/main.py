@@ -273,10 +273,19 @@ def render_context_prompt(messages: list[dict[str, Any]]) -> str:
     return prompt
 
 
+# 可选的"品牌版"首页：私有素材不进公开仓库，运行时若数据目录里有
+# index.branded.html 就优先用它（每次请求都查，替换文件后无需重启）。
+BRANDED_INDEX = Path(
+    os.environ.get("BRANDED_INDEX_FILE", PROJECT_DIR + "/index.branded.html")
+).expanduser()
+
+
 @app.get("/")
 async def index() -> FileResponse:
+    page = BRANDED_INDEX if BRANDED_INDEX.is_file() else STATIC / "index.html"
     return FileResponse(
-        STATIC / "index.html",
+        page,
+        media_type="text/html; charset=utf-8",
         headers={"Cache-Control": "no-cache"},
     )
 
