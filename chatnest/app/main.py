@@ -455,23 +455,28 @@ async def chat(body: ChatBody) -> StreamingResponse:
                 )
             chat_args = (prompt, conv_id, resume_id, body.model,
                          body.effort, body.extended, log_timing)
-            if body.model == "codex":
-                chat_stream = stream_codex_chat(*chat_args)
-                first_chunk = await chat_stream.__anext__()
-            else:
-                try:
-                    chat_stream = stream_chat(*chat_args)
-                    first_chunk = await chat_stream.__anext__()
-                except (SessionResumeError, StopAsyncIteration):
-                    logger.info("session resume failed for conv=%s, retrying without session", conv_id)
-                    chat_args = (prompt, conv_id, None, body.model,
-                                 body.effort, body.extended, log_timing)
-                    chat_stream = stream_chat(*chat_args)
-                    first_chunk = await chat_stream.__anext__()
 
             async def _merged():
-                yield first_chunk
-                async for c in chat_stream:
+                # 把"拉第一个 chunk"也放进这个生成器里，让下面的心跳循环
+                # （每 15s 一次 : heartbeat）也罩住冷启动 + breath 的漫长等待。
+                # 小内存机器冷启动 + 醒井常要 60~100s 才吐第一个字，这段
+                # 若没有字节外流，会被 Cloudflare 在 ~100s 静默后掐断连接
+                # （前端表现为"连接意外结束"）。
+                if body.model == "codex":
+                    async for c in stream_codex_chat(*chat_args):
+                        yield c
+                    return
+                stream = stream_chat(*chat_args)
+                try:
+                    first = await stream.__anext__()
+                except (SessionResumeError, StopAsyncIteration):
+                    logger.info("session resume failed for conv=%s, retrying without session", conv_id)
+                    retry_args = (prompt, conv_id, None, body.model,
+                                  body.effort, body.extended, log_timing)
+                    stream = stream_chat(*retry_args)
+                    first = await stream.__anext__()
+                yield first
+                async for c in stream:
                     yield c
 
             heartbeat_interval = 15
