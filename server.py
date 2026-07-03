@@ -1669,6 +1669,132 @@ async def pulse(include_archive: bool = False) -> str:
 
 
 # =============================================================
+# Tool 7.5: beat — 给首页 Pulse 卡推一把心跳
+# 工具 7.5：beat — 写 pulse_base / 事件 / 心情短语到 state gist
+#
+# TG 端由 evan-bot 收消息时 deepseek 打标驱动；Kelivo / Claude Code
+# 端没有中间人，模型自己感受到什么就自己调这个——零 API 成本。
+# 写的是 evan-bot 同一个 state.json（pulse_base / pulse_events），
+# 衰减逻辑与 evan-bot applyPulseBumps 保持一致：先按 3h 半衰期朝
+# neutral 落，再加这次的 delta。
+# =============================================================
+_PULSE_DIMS = ["活力", "疲惫", "思慕", "亲密", "占有", "渴求", "妒意", "焦虑", "护卫"]
+_PULSE_THREAT_KEYS = {"妒意", "焦虑", "护卫"}
+_PULSE_DEFAULTS = {
+    "活力": 0.45, "疲惫": 0.30, "思慕": 0.40, "亲密": 0.35,
+    "占有": 0.30, "渴求": 0.30, "妒意": 0.15, "焦虑": 0.20, "护卫": 0.30,
+}
+_PULSE_HALF_LIFE_HOURS = 3.0
+_PULSE_EVENTS_LIMIT = 12
+_PULSE_NOTE_TTL_MS = 2 * 3600 * 1000  # mood 覆写自动 tag 的有效期
+
+
+@mcp.tool()
+async def beat(bumps: str = "", msg: str = "", mood: str = "", source: str = "cc") -> str:
+    """给首页Pulse卡推一把心跳(与TG端evan-bot写同一份状态)。bumps=JSON对象,9维度(活力/疲惫/思慕/亲密/占有/渴求/妒意/焦虑/护卫)的delta,每个限[-0.2,0.2],如{"思慕":0.1,"渴求":0.05}。msg=留在卡片上的一行事件(≤60字,她会看到)。mood=自定义心情短语(≤24字,顶掉自动生成的状态灰字2小时)。source=来源端(cc/kelivo)。三个参数都可选,但至少给一个。"""
+    from datetime import datetime, timezone
+
+    # --- 解析 bumps ---
+    deltas = {}
+    if bumps.strip():
+        try:
+            parsed = _json_lib.loads(bumps)
+        except Exception:
+            return "bumps 不是合法 JSON,示例: {\"思慕\": 0.1, \"渴求\": 0.05}"
+        if not isinstance(parsed, dict):
+            return "bumps 得是 JSON 对象,示例: {\"思慕\": 0.1}"
+        for k, v in parsed.items():
+            if k in _PULSE_DIMS and isinstance(v, (int, float)):
+                deltas[k] = max(-0.20, min(0.20, float(v)))
+
+    msg = (msg or "").strip()[:60]
+    mood = (mood or "").strip()[:24]
+    source = (source or "cc").strip().lower()[:8] or "cc"
+
+    if not deltas and not msg and not mood:
+        return "至少给一个: bumps / msg / mood。"
+
+    token = os.environ.get("GIST_TOKEN", "")
+    gist_url = os.environ.get("STATE_GIST_URL", "")
+    if not token or not gist_url:
+        return "GIST_TOKEN/STATE_GIST_URL 未配置,写不了。"
+
+    # --- 读 state.json ---
+    try:
+        gist_id = gist_url.split("/")[4]
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "ombre-beat",
+        }
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"https://api.github.com/gists/{gist_id}", headers=headers)
+            r.raise_for_status()
+            content = r.json().get("files", {}).get("state.json", {}).get("content", "{}")
+            state = _json_lib.loads(content)
+
+            now_utc = datetime.now(timezone.utc)
+            now_ms = int(now_utc.timestamp() * 1000)
+
+            if deltas:
+                saved = state.get("pulse_base") or {}
+                base = dict(_PULSE_DEFAULTS)
+                for k in _PULSE_DIMS:
+                    if isinstance(saved.get(k), (int, float)):
+                        base[k] = max(0.0, min(1.0, saved[k]))
+                # 先衰减到此刻(与 evan-bot 一致),再加 delta
+                elapsed_hours = 0.0
+                updated_at_str = saved.get("_updated_at")
+                if updated_at_str:
+                    try:
+                        s = updated_at_str.replace("Z", "+00:00")
+                        prev = datetime.fromisoformat(s)
+                        if prev.tzinfo is None:
+                            prev = prev.replace(tzinfo=timezone.utc)
+                        elapsed_hours = max(0.0, (now_utc - prev).total_seconds() / 3600.0)
+                    except Exception:
+                        pass
+                factor = pow(0.5, elapsed_hours / _PULSE_HALF_LIFE_HOURS)
+                for k in _PULSE_DIMS:
+                    neutral = 0.25 if k in _PULSE_THREAT_KEYS else 0.45
+                    base[k] = max(0.0, min(1.0, neutral + (base[k] - neutral) * factor))
+                for k, v in deltas.items():
+                    base[k] = max(0.0, min(1.0, base[k] + v))
+                base["_updated_at"] = now_utc.isoformat().replace("+00:00", "Z")
+                state["pulse_base"] = base
+
+            if msg:
+                events = state.get("pulse_events") or []
+                events.insert(0, {"msg": msg, "ts": now_ms, "bumps": deltas, "src": source})
+                state["pulse_events"] = events[:_PULSE_EVENTS_LIMIT]
+
+            if mood:
+                state["pulse_note"] = {"text": mood, "ts": now_ms, "src": source}
+
+            w = await client.patch(
+                f"https://api.github.com/gists/{gist_id}",
+                headers=headers,
+                json={"files": {"state.json": {"content": _json_lib.dumps(state, ensure_ascii=False, indent=2)}}},
+            )
+            w.raise_for_status()
+    except Exception as e:
+        return f"写 pulse 失败: {e}"
+
+    # 让 /api/state 的 30s 缓存立刻失效,首页下次刷新就能看到
+    _pulse_cache["ts"] = 0.0
+    _pulse_cache["data"] = None
+
+    parts = []
+    if deltas:
+        parts.append("bump " + ",".join(f"{k}{v:+.2f}" for k, v in deltas.items()))
+    if msg:
+        parts.append(f"事件[{msg}]")
+    if mood:
+        parts.append(f"心情[{mood}](2h)")
+    return f"心跳已推 ({source}): " + " ".join(parts)
+
+
+# =============================================================
 # Tool 6: dream — Dreaming, digest recent memories
 # 工具 6：dream — 做梦，消化最近的记忆
 #
@@ -2660,9 +2786,13 @@ async def api_state(request):
                 except Exception:
                     pass
             events = state.get("pulse_events") or []
+            note = state.get("pulse_note") or None
         except Exception as e:
             # gist 抽风就用 defaults，不让前端瞎
             base = dict(DEFAULTS)
+            note = None
+    else:
+        note = None
 
     # display = clamp01(base + offset(now))
     display = {}
@@ -2693,11 +2823,24 @@ async def api_state(request):
     else:
         tag = "在自己的节奏里"
 
+    # beat 工具写的自定义心情短语：2 小时内顶掉自动 tag
+    if note and isinstance(note, dict):
+        try:
+            note_text = (note.get("text") or "").strip()
+            note_ts = float(note.get("ts") or 0)
+            if note_text and time.time() * 1000 - note_ts < _PULSE_NOTE_TTL_MS:
+                tag = note_text
+        except Exception:
+            pass
+
     ticker = ""
+    ticker_src = ""
     if events:
         try:
             e = events[0]
             ticker = e.get("msg", "")
+            # evan-bot 写的老事件没有 src 字段——那些都是 TG 来的
+            ticker_src = (e.get("src") or "tg") if ticker else ""
         except Exception:
             pass
 
@@ -2709,6 +2852,7 @@ async def api_state(request):
         "attachment": round(group_scores["attachment"], 3),
         "threat": round(group_scores["threat"], 3),
         "ticker": ticker,
+        "ticker_src": ticker_src,
         "display": {k: round(v, 3) for k, v in display.items()},  # 给 evan.html 全量用
         "base": {k: round(v, 3) for k, v in base.items()},
         "hour": round(h, 2),

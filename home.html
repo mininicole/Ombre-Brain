@@ -741,7 +741,9 @@ async function loadPulse() {
   document.getElementById('pulse-score-act').textContent = Math.round(s.activation * 100);
   document.getElementById('pulse-score-att').textContent = Math.round(s.attachment * 100);
   document.getElementById('pulse-score-thr').textContent = Math.round(s.threat * 100);
-  document.getElementById('pulse-ticker').textContent = s.ticker ? '· ' + s.ticker : ' ';
+  // 事件来源标记：tg=电报端 / kelivo / cc=Claude Code 端（老数据没有 src，都算 TG）
+  const srcLabel = { tg: 'TG', kelivo: 'KV', cc: 'CC' }[s.ticker_src] || (s.ticker_src || '').toUpperCase();
+  document.getElementById('pulse-ticker').textContent = s.ticker ? '· ' + s.ticker + (srcLabel ? ' ⌁' + srcLabel : '') : ' ';
 }
 // refresh every 30s
 setInterval(loadPulse, 30000);
