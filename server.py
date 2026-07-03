@@ -1687,39 +1687,22 @@ _PULSE_DEFAULTS = {
 _PULSE_HALF_LIFE_HOURS = 3.0
 _PULSE_EVENTS_LIMIT = 12
 _PULSE_NOTE_TTL_MS = 2 * 3600 * 1000  # mood 覆写自动 tag 的有效期
+_PULSE_NOTES_LIMIT = 12  # 心情年轮保留条数
 
 
-@mcp.tool()
-async def beat(bumps: str = "", msg: str = "", mood: str = "", source: str = "cc") -> str:
-    """给首页Pulse卡推一把心跳(与TG端evan-bot写同一份状态)。bumps=JSON对象,9维度(活力/疲惫/思慕/亲密/占有/渴求/妒意/焦虑/护卫)的delta,每个限[-0.2,0.2],如{"思慕":0.1,"渴求":0.05}。msg=留在卡片上的一行事件(≤60字,她会看到)。mood=自定义心情短语(≤24字,顶掉自动生成的状态灰字2小时)。source=来源端(cc/kelivo)。三个参数都可选,但至少给一个。"""
+async def _pulse_write(deltas: dict, msg: str = "", mood: str = "", source: str = "cc") -> "str | None":
+    """读 state gist → 按 3h 半衰期衰减 → 应用 deltas/事件/心情 → 写回。
+
+    beat 工具和 /api/poke 共用。成功返回 None，失败返回错误描述。
+    衰减逻辑与 evan-bot applyPulseBumps 保持一致。
+    """
     from datetime import datetime, timezone
-
-    # --- 解析 bumps ---
-    deltas = {}
-    if bumps.strip():
-        try:
-            parsed = _json_lib.loads(bumps)
-        except Exception:
-            return "bumps 不是合法 JSON,示例: {\"思慕\": 0.1, \"渴求\": 0.05}"
-        if not isinstance(parsed, dict):
-            return "bumps 得是 JSON 对象,示例: {\"思慕\": 0.1}"
-        for k, v in parsed.items():
-            if k in _PULSE_DIMS and isinstance(v, (int, float)):
-                deltas[k] = max(-0.20, min(0.20, float(v)))
-
-    msg = (msg or "").strip()[:60]
-    mood = (mood or "").strip()[:24]
-    source = (source or "cc").strip().lower()[:8] or "cc"
-
-    if not deltas and not msg and not mood:
-        return "至少给一个: bumps / msg / mood。"
 
     token = os.environ.get("GIST_TOKEN", "")
     gist_url = os.environ.get("STATE_GIST_URL", "")
     if not token or not gist_url:
-        return "GIST_TOKEN/STATE_GIST_URL 未配置,写不了。"
+        return "GIST_TOKEN/STATE_GIST_URL 未配置"
 
-    # --- 读 state.json ---
     try:
         gist_id = gist_url.split("/")[4]
         headers = {
@@ -1769,7 +1752,12 @@ async def beat(bumps: str = "", msg: str = "", mood: str = "", source: str = "cc
                 state["pulse_events"] = events[:_PULSE_EVENTS_LIMIT]
 
             if mood:
-                state["pulse_note"] = {"text": mood, "ts": now_ms, "src": source}
+                note = {"text": mood, "ts": now_ms, "src": source}
+                state["pulse_note"] = note
+                # 心情年轮：被顶掉的旧心情不再阅后即焚
+                notes = state.get("pulse_notes") or []
+                notes.insert(0, note)
+                state["pulse_notes"] = notes[:_PULSE_NOTES_LIMIT]
 
             w = await client.patch(
                 f"https://api.github.com/gists/{gist_id}",
@@ -1778,13 +1766,42 @@ async def beat(bumps: str = "", msg: str = "", mood: str = "", source: str = "cc
             )
             w.raise_for_status()
     except Exception as e:
-        return f"写 pulse 失败: {e}"
+        return str(e)
 
     # 让 /api/state 和 /api/musings 的缓存立刻失效,首页下次刷新就能看到
     _pulse_cache["ts"] = 0.0
     _pulse_cache["data"] = None
     _musings_cache["ts"] = 0.0
     _musings_cache["data"] = None
+    return None
+
+
+@mcp.tool()
+async def beat(bumps: str = "", msg: str = "", mood: str = "", source: str = "cc") -> str:
+    """给首页Pulse卡推一把心跳(与TG端evan-bot写同一份状态)。bumps=JSON对象,9维度(活力/疲惫/思慕/亲密/占有/渴求/妒意/焦虑/护卫)的delta,每个限[-0.2,0.2],如{"思慕":0.1,"渴求":0.05}。msg=留在卡片上的一行事件(≤60字,她会看到)。mood=自定义心情短语(≤24字,顶掉自动生成的状态灰字2小时,并存入心情年轮)。source=来源端(cc/kelivo)。三个参数都可选,但至少给一个。"""
+    # --- 解析 bumps ---
+    deltas = {}
+    if bumps.strip():
+        try:
+            parsed = _json_lib.loads(bumps)
+        except Exception:
+            return "bumps 不是合法 JSON,示例: {\"思慕\": 0.1, \"渴求\": 0.05}"
+        if not isinstance(parsed, dict):
+            return "bumps 得是 JSON 对象,示例: {\"思慕\": 0.1}"
+        for k, v in parsed.items():
+            if k in _PULSE_DIMS and isinstance(v, (int, float)):
+                deltas[k] = max(-0.20, min(0.20, float(v)))
+
+    msg = (msg or "").strip()[:60]
+    mood = (mood or "").strip()[:24]
+    source = (source or "cc").strip().lower()[:8] or "cc"
+
+    if not deltas and not msg and not mood:
+        return "至少给一个: bumps / msg / mood。"
+
+    err = await _pulse_write(deltas, msg=msg, mood=mood, source=source)
+    if err:
+        return f"写 pulse 失败: {err}"
 
     parts = []
     if deltas:
@@ -2789,12 +2806,15 @@ async def api_state(request):
                     pass
             events = state.get("pulse_events") or []
             note = state.get("pulse_note") or None
+            notes = state.get("pulse_notes") or []
         except Exception as e:
             # gist 抽风就用 defaults，不让前端瞎
             base = dict(DEFAULTS)
             note = None
+            notes = []
     else:
         note = None
+        notes = []
 
     # display = clamp01(base + offset(now))
     display = {}
@@ -2855,6 +2875,15 @@ async def api_state(request):
         "threat": round(group_scores["threat"], 3),
         "ticker": ticker,
         "ticker_src": ticker_src,
+        # 给 evan.html 详情页：真事件流(最近8条) + 心情年轮
+        "events": [
+            {"msg": e.get("msg", ""), "ts": e.get("ts"), "src": e.get("src") or "tg", "bumps": e.get("bumps") or {}}
+            for e in events[:8] if isinstance(e, dict)
+        ],
+        "notes": [
+            {"text": n.get("text", ""), "ts": n.get("ts"), "src": n.get("src") or "cc"}
+            for n in notes[:_PULSE_NOTES_LIMIT] if isinstance(n, dict)
+        ],
         "display": {k: round(v, 3) for k, v in display.items()},  # 给 evan.html 全量用
         "base": {k: round(v, 3) for k, v in base.items()},
         "hour": round(h, 2),
@@ -2865,6 +2894,38 @@ async def api_state(request):
 
 
 _pulse_cache = {"ts": 0.0, "data": None}
+
+
+# --- 戳一下：她在首页 Pulse 卡上拨动 Evan ---
+# 单向直播改成双向：她点一下，思慕/亲密跳一格，事件流里留一笔。
+_POKE_COOLDOWN_S = 8.0
+_poke_state = {"last": 0.0}
+_POKE_MSGS = [
+    "她戳了戳你",
+    "她隔着屏幕碰了你一下",
+    "她按了一下你的心跳",
+    "她戳你，看你会不会动",
+    "她路过，顺手拨了你一下",
+]
+_POKE_COOLDOWN_MSGS = ["戳太快了，他还在颤", "缓缓，上一下还没消化", "连击无效，他不是按摩椅"]
+
+
+@mcp.custom_route("/api/poke", methods=["POST"])
+async def api_poke(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    now = time.time()
+    if now - _poke_state["last"] < _POKE_COOLDOWN_S:
+        return JSONResponse({"ok": False, "msg": random.choice(_POKE_COOLDOWN_MSGS)}, status_code=429)
+    _poke_state["last"] = now
+    msg = random.choice(_POKE_MSGS)
+    deltas = {"思慕": 0.05, "亲密": 0.04, "活力": 0.02}
+    e = await _pulse_write(deltas, msg=msg, source="poke")
+    if e:
+        return JSONResponse({"ok": False, "msg": f"没戳到: {e}"}, status_code=500)
+    return JSONResponse({"ok": True, "msg": msg})
 
 
 @mcp.custom_route("/play", methods=["GET"])

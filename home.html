@@ -166,6 +166,10 @@
   .pulse-thr-fill { background: #c97a3a; }
   .pulse-score { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--ink); text-align: right; }
   .pulse-ticker { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; color: var(--ink-faint); margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--line); }
+  .poke-row { margin-top: 10px; text-align: right; }
+  .poke-btn { font-family: var(--cjk); font-size: 11.5px; color: var(--clay); background: none; border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; cursor: pointer; transition: transform .12s ease; }
+  .poke-btn:active { transform: scale(0.92); }
+  .poke-btn:disabled { color: var(--ink-faint); cursor: default; }
 
   /* days stats */
   .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
@@ -371,6 +375,7 @@
         <div class="pulse-row"><span class="pulse-name pulse-thr">THREAT</span><span class="pulse-bar"><span class="pulse-fill pulse-thr-fill" id="pulse-bar-thr"></span></span><span class="pulse-score" id="pulse-score-thr">—</span></div>
       </div>
       <div class="pulse-ticker" id="pulse-ticker">&nbsp;</div>
+      <div class="poke-row"><button class="poke-btn" id="poke-btn" onclick="pokeEvan(event)">戳他一下</button></div>
     </div>
 
     <div class="b-card b-days">
@@ -743,11 +748,30 @@ async function loadPulse() {
   document.getElementById('pulse-score-att').textContent = Math.round(s.attachment * 100);
   document.getElementById('pulse-score-thr').textContent = Math.round(s.threat * 100);
   // 事件来源标记：tg=电报端 / kelivo / cc=Claude Code 端（老数据没有 src，都算 TG）
-  const srcLabel = { tg: 'TG', kelivo: 'KV', cc: 'CC' }[s.ticker_src] || (s.ticker_src || '').toUpperCase();
+  const srcLabel = { tg: 'TG', kelivo: 'KV', cc: 'CC', poke: '她' }[s.ticker_src] || (s.ticker_src || '').toUpperCase();
   document.getElementById('pulse-ticker').textContent = s.ticker ? '· ' + s.ticker + (srcLabel ? ' ⌁' + srcLabel : '') : ' ';
 }
 // refresh every 30s
 setInterval(loadPulse, 30000);
+
+// 戳一下：拨动他的思慕/亲密，事件流里留一笔。按钮在卡片里，
+// 卡片整体点击是跳详情页——这里要拦住冒泡。
+async function pokeEvan(ev) {
+  ev.stopPropagation();
+  const btn = document.getElementById('poke-btn');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  let label = '没戳到';
+  try {
+    const r = await fetch('/api/poke', { method: 'POST' });
+    if (r.status === 401) { showAuth(); btn.disabled = false; return; }
+    const d = await r.json();
+    label = d.ok ? '戳到了' : (d.msg || '没戳到');
+    if (d.ok) loadPulse();
+  } catch {}
+  btn.textContent = label;
+  setTimeout(() => { btn.textContent = '戳他一下'; btn.disabled = false; }, 8000);
+}
 
 async function doLogin() {
   const pwd = document.getElementById('auth-pwd').value;

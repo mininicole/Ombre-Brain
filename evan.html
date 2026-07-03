@@ -259,6 +259,39 @@
     text-align: center;
   }
 
+  /* 真事件流 + 心情年轮 */
+  .feed {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+  }
+  .feed-title {
+    font-weight: 600;
+    font-size: 13.5px;
+    margin-bottom: 10px;
+  }
+  .feed-title .zh {
+    margin-left: 8px;
+    font-weight: 400;
+    font-size: 11px;
+    color: var(--ink-mute);
+  }
+  .feed-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 5px 0;
+    border-top: 1px dashed var(--line);
+    font-size: 12.5px;
+  }
+  .feed-row:first-child { border-top: none; }
+  .feed-row .t { font-family: var(--mono); font-size: 10.5px; color: var(--ink-mute); white-space: nowrap; }
+  .feed-row .m { flex: 1; word-break: break-word; }
+  .feed-row .b { font-family: var(--mono); font-size: 10px; color: var(--ink-mute); white-space: nowrap; }
+  .feed-row .s { font-family: var(--mono); font-size: 10px; color: var(--ink-mute); white-space: nowrap; }
+
   /* glossary */
   details.glossary {
     background: var(--panel);
@@ -400,6 +433,16 @@
   <div id="groups"></div>
 
   <div id="ticker"></div>
+
+  <!-- 真事件流 + 心情年轮：真值模式才显示（数据来自 /api/state） -->
+  <div class="feed" id="events-feed" style="display:none;">
+    <div class="feed-title">EVENTS<span class="zh">最近拨动过他的</span></div>
+    <div id="events-list"></div>
+  </div>
+  <div class="feed" id="notes-feed" style="display:none;">
+    <div class="feed-title">MOODS<span class="zh">心情年轮</span></div>
+    <div id="notes-list"></div>
+  </div>
 
   <!-- how to read -->
   <details class="glossary">
@@ -757,12 +800,49 @@ async function loadRealState() {
       _usingMock = false;
       if (_mockTimer) { clearInterval(_mockTimer); _mockTimer = null; }
       renderRealMode();
+      renderFeeds(s);
       return true;
     }
   } catch (e) {
     // fall through to mock
   }
   return false;
+}
+
+// ============ 真事件流 + 心情年轮 ============
+// mock 模式没有这些数据，两个块保持隐藏；真值模式下由 loadRealState 喂。
+const SRC_LABEL = { tg: 'TG', kelivo: 'KV', cc: 'CC', poke: '她' };
+function escHtml(x) { const d = document.createElement('div'); d.textContent = x == null ? '' : x; return d.innerHTML; }
+function fmtTs(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  return d.toDateString() === new Date().toDateString() ? hm : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+}
+function renderFeeds(s) {
+  const evs = Array.isArray(s.events) ? s.events : [];
+  if (evs.length) {
+    document.getElementById('events-feed').style.display = '';
+    document.getElementById('events-list').innerHTML = evs.map(e => {
+      const bumps = Object.entries(e.bumps || {})
+        .map(([k, v]) => k + (v > 0 ? '+' : '') + Math.round(v * 100)).join(' ');
+      const src = SRC_LABEL[e.src] || (e.src || '').toUpperCase();
+      return '<div class="feed-row"><span class="t">' + fmtTs(e.ts) + '</span><span class="m">' + escHtml(e.msg) + '</span>'
+        + (bumps ? '<span class="b">' + escHtml(bumps) + '</span>' : '')
+        + (src ? '<span class="s">⌁' + src + '</span>' : '') + '</div>';
+    }).join('');
+    // ticker 也换成真事件，不再是前端编的
+    document.getElementById('ticker').textContent = '· ' + evs[0].msg + ' · ' + fmtTs(evs[0].ts);
+  }
+  const nts = Array.isArray(s.notes) ? s.notes : [];
+  if (nts.length) {
+    document.getElementById('notes-feed').style.display = '';
+    document.getElementById('notes-list').innerHTML = nts.map(n => {
+      const src = SRC_LABEL[n.src] || (n.src || '').toUpperCase();
+      return '<div class="feed-row"><span class="t">' + fmtTs(n.ts) + '</span><span class="m">' + escHtml(n.text) + '</span>'
+        + (src ? '<span class="s">⌁' + src + '</span>' : '') + '</div>';
+    }).join('');
+  }
 }
 
 // 真值模式专用 render：不调 lastBase 平滑（不让 30 秒间的 render 把 delta 磨成 0）
