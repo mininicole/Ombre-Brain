@@ -11,7 +11,7 @@ primary_region = 'nrt'
   OMBRE_BUCKETS_DIR = '/app/buckets'
   # /chat 的摘要小工（思考摘要/工具标题）每个都是独立 claude CLI，
   # 512MB 机器养不起三个引擎——关掉，只留主对话（2026-07-02）
-  CHAT_DISABLE_SUMMARIES = '1'
+  CHAT_DISABLE_SUMMARIES = '0'
   # Night-Fall 浮现调参：默认 0.62 太严，开窗几乎只走 affect 单通道，
   # 把门槛降到 0.50（affect 单轴偏差容忍从 ±0.27 放宽到 ±0.35），
   # 自发概率 0.02 → 0.06，attempt 跟着降以保持"低信号不消耗机会"语义。
@@ -41,13 +41,14 @@ primary_region = 'nrt'
     path = '/health'
 
 # 2026-07-02 加 swap：/chat 的 ChatNest + Claude Code CLI 跟 ombre 同容器，
-# 512MB 物理内存不够峰值用，但预算上限 $5/月不能升配——
-# 用免费 swap 兜住峰值（CLI 大部分时间在等模型响应，换出去无感）
+# swap 保留作二级缓冲，但主内存 2026-07-03 升到 1GB：
+# 512MB 下 /chat（主对话 + 摘要小工 + node）持续 OOM 抖动，
+# "连接意外结束"反复出现。深深预批动用（真实底座约 $2.5，压 $5 线内）。
 swap_size_mb = 1024
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '512mb'
+  memory = '1gb'
 
 [mounts]
   source = 'ombre_data'
