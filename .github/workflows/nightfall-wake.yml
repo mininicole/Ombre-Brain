@@ -1,0 +1,44 @@
+name: Night-Fall Wake & Dream
+
+# 机器改成闲时 suspend 后，内部的"每天 19 UTC 做梦"循环会随进程一起睡死。
+# 这个外部 cron 每天 19:00 UTC（北京凌晨 3 点）敲一次做梦接口——
+# 这一个请求同时干两件事：① Fly 收到外部流量把挂起的机器唤醒；
+# ② 请求本身就是做梦指令，直接触发 Night-Fall generate。
+# 不依赖内部循环。接口 /api/night_fall/generate 目前公开无鉴权。
+
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+jobs:
+  wake-and-dream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the machine
+        # 先用 /health 把 suspend 的机器唤醒（Fly auto-start），
+        # 给 ASGI lifespan 一点时间起来，避免第一枪打在没醒透的进程上。
+        run: |
+          curl -s -m 60 --retry 3 --retry-delay 5 \
+            https://ombre.mininicole.com/health || true
+          sleep 8
+
+      - name: Trigger dream
+        # 做梦本身可能要几十秒（要调模型），给足超时；失败重试两次。
+        run: |
+          for i in 1 2 3; do
+            echo "尝试做梦 (第 $i 次)..."
+            code=$(curl -s -m 300 -o /tmp/dream.json -w "%{http_code}" \
+              -X POST https://ombre.mininicole.com/api/night_fall/generate)
+            echo "HTTP $code"
+            cat /tmp/dream.json 2>/dev/null || true
+            echo
+            if [ "$code" = "200" ]; then
+              echo "做梦成功。"
+              exit 0
+            fi
+            echo "非 200，等 15s 重试..."
+            sleep 15
+          done
+          echo "三次都没成功——今晚的梦可能漏了，看日志排查。"
+          exit 1
