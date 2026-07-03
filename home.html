@@ -557,7 +557,8 @@ async function loadMusings() {
     const data = await r.json();
     if (data.bio) {
       document.getElementById('now-row').style.display = 'flex';
-      document.getElementById('bio-text').textContent = data.bio;
+      const bioSrc = { tg: 'TG', kelivo: 'KV', cc: 'CC' }[data.bio_src] || '';
+      document.getElementById('bio-text').textContent = data.bio + (bioSrc ? ' ⌁' + bioSrc : '');
     }
     document.getElementById('stat-today').textContent =
       (data.today_interactions === undefined || data.today_interactions === null) ? '—' : data.today_interactions;

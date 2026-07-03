@@ -1780,9 +1780,11 @@ async def beat(bumps: str = "", msg: str = "", mood: str = "", source: str = "cc
     except Exception as e:
         return f"写 pulse 失败: {e}"
 
-    # 让 /api/state 的 30s 缓存立刻失效,首页下次刷新就能看到
+    # 让 /api/state 和 /api/musings 的缓存立刻失效,首页下次刷新就能看到
     _pulse_cache["ts"] = 0.0
     _pulse_cache["data"] = None
+    _musings_cache["ts"] = 0.0
+    _musings_cache["data"] = None
 
     parts = []
     if deltas:
@@ -3023,8 +3025,29 @@ async def api_musings(request):
                         today_interactions += 1
         except Exception:
             pass
+        # 此刻：取最新的一条状态——TG 端 <bio> 签名(recent_bios_evan) 和
+        # beat 工具写的心情(pulse_note)，谁新显示谁。老的 last_bio 字段
+        # 自签名链路改版后已无人更新，只作最后兜底。
+        bio_text = state.get("last_bio", "")
+        bio_src = "tg"
+        bio_ts = 0.0
+        try:
+            rb = state.get("recent_bios_evan") or []
+            if rb and (rb[-1].get("bio") or "").strip():
+                bio_text = rb[-1]["bio"].strip()
+                bio_ts = float(rb[-1].get("ts") or 0)
+        except Exception:
+            pass
+        try:
+            pn = state.get("pulse_note") or {}
+            if (pn.get("text") or "").strip() and float(pn.get("ts") or 0) > bio_ts:
+                bio_text = pn["text"].strip()
+                bio_src = pn.get("src") or "cc"
+        except Exception:
+            pass
         data = {
-            "bio": state.get("last_bio", ""),
+            "bio": bio_text,
+            "bio_src": bio_src,
             "musings": musings,
             "today_interactions": today_interactions + cc_count,
             "today_tg": today_interactions,
