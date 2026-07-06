@@ -452,8 +452,20 @@ CONVERSATION_SUMMARY_PROMPT = (
     "达成的约定或决定、以及关系里的重要细节。"
     "要求：第三人称叙述，保留具体信息（名字、时间、事件、承诺），不要逐句复述，"
     "不要评论，不要加称呼或问候。如果附带了旧摘要，把旧摘要和新对话融合成一份连贯的摘要，"
-    "不要丢掉旧摘要里的关键信息。长度控制在 400 字以内。只输出摘要正文。"
+    "不要丢掉旧摘要里的关键信息。长度控制在 400 字以内。"
+    "整段摘要只输出一遍，严禁把同样的内容重复两遍。只输出摘要正文。"
 )
+
+
+def _dedup_summary(summary: str) -> str:
+    """haiku 偶尔会把整段摘要原样重复一遍（退化性重复）。
+    检测开头是否在后半段再次出现，是就截到第一次结束。"""
+    if len(summary) > 80:
+        head = summary[:40]
+        idx = summary.find(head, 40)
+        if idx != -1 and idx >= len(summary) * 0.4:
+            summary = summary[:idx].strip()
+    return summary[:800]
 
 
 async def summarize_conversation(transcript: str, prev_summary: str = "") -> str:
@@ -508,4 +520,4 @@ async def summarize_conversation(transcript: str, prev_summary: str = "") -> str
         summary = text.strip()
         if not summary or "not logged in" in summary.lower():
             return ""
-        return summary
+        return _dedup_summary(summary)
