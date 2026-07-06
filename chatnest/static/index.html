@@ -1406,6 +1406,11 @@ function beginClaude(userText,userAttachments=[]){document.querySelector('.strea
     },
     toolUse(d){if(!currentTraceRow){if(summary.classList.contains('show')&&!raw.trim()){summary.classList.remove('show');currentTraceRow=newTraceRow();if(prevThought){const s=thoughtPreview(prevThought);_setPhases(currentTraceRow,[{id:'p_prev',type:'thinking',status:'completed',processText:prevThought,summary:s,title:s}])}}else{currentTraceRow=newTraceRow()}}_appendToolPhase(currentTraceRow,d);_maybeFetchThinkingSummary(currentTraceRow);_renderTraceRowActive(currentTraceRow);_toolToRow.set(d.id,currentTraceRow);setClaudeLogoMode(trailLogo,'shimmer')},
     toolResult(d){const r=_toolToRow.get(d.tool_use_id);if(!r)return;_updateToolPhase(r,d.tool_use_id,d.content||'',!!d.is_error);_renderTraceRowActive(r);_maybeFetchToolCaption(r,d);_collectUrls(d.content||'',_sources)},
+    rawText(){return raw},
+    hasThought(){return gotThought},
+    // 断线恢复用：把气泡内容同步到服务端存好的全文。
+    // 已流出的部分是全文前缀就只补尾巴——直接 text(全文) 会把内容重复一遍
+    syncTo(full){full=full||'';if(!full)return;if(full.startsWith(raw)){if(full.length>raw.length)this.text(full.slice(raw.length))}else if(!raw.trim()){this.text(full)}},
     fail(t){
       row.classList.remove('streaming');
       setPhase('complete');
@@ -1475,7 +1480,7 @@ function initSheetDrag(el,closeSelector,onClose){
 }
 initSheetDrag($('thoughtSheet'),'#closeThought',()=>{delete $('thoughtSheet').dataset.live});
 initSheetDrag($('modelSheet'),'#closeModel',()=>{_modelPage='main'});
-async function recoverAfterBreak(msg,convId,failText,isActive=()=>true,expectedUserMsgId=null){if(!msg)return;if(!convId){if(isActive())msg.fail(failText);return}await new Promise(r=>setTimeout(r,1500));if(!isActive())return;try{const r=await api(`/api/sessions/${encodeURIComponent(convId)}/messages`);if(!r.ok)throw 0;const data=await r.json();if(!isActive())return;const list=data.messages||[];let last=null;if(expectedUserMsgId!=null){const uid=String(expectedUserMsgId);const idx=list.findIndex(m=>m.role==='user'&&String(m.id)===uid);const next=idx>=0?list[idx+1]:null;if(next&&next.role==='assistant'&&(next.text||'').trim())last=next}if(!last)throw 0;if(last.thinking)msg.thinking(last.thinking);msg.text(last.text);msg.finish()}catch{if(isActive())msg.fail(failText)}}
+async function recoverAfterBreak(msg,convId,failText,isActive=()=>true,expectedUserMsgId=null){if(!msg)return;if(!convId){if(isActive())msg.fail(failText);return}for(let i=0;i<10;i++){await new Promise(r=>setTimeout(r,i?4000:1500));if(!isActive())return;try{const r=await api(`/api/sessions/${encodeURIComponent(convId)}/messages`);if(!r.ok)continue;const data=await r.json();if(!isActive())return;const list=data.messages||[];let last=null;if(expectedUserMsgId!=null){const uid=String(expectedUserMsgId);const idx2=list.findIndex(m=>m.role==='user'&&String(m.id)===uid);const next=idx2>=0?list[idx2+1]:null;if(next&&next.role==='assistant'&&(next.text||'').trim())last=next}if(!last)continue;if(last.thinking&&msg.hasThought&&!msg.hasThought())msg.thinking(last.thinking);if(msg.syncTo)msg.syncTo(last.text);else msg.text(last.text);msg.finish();return}catch{}}if(isActive())msg.fail(failText)}
 
 let _chatAbort=null,_chatRunId=0,_activeMsg=null;
 function _finishDanglingStreamingRows(){

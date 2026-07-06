@@ -32,6 +32,7 @@ from app.claude import (
     SessionResumeError,
     available_models,
     stream_chat,
+    summarize_conversation,
     summarize_thinking,
     summarize_tool_use,
     summarize_traces,
@@ -61,12 +62,15 @@ from app.store import (
     ConversationNotFound,
     begin_turn,
     complete_turn,
+    conversation_messages,
     ensure_conversation,
+    get_compaction_state,
     initialize_store,
     prepare_edit_turn,
     prepare_retry_turn,
     resolve_conversation,
     restore_branch,
+    set_compaction_state,
 )
 from app.uploads import (
     remove_conversation_uploads,
@@ -80,6 +84,8 @@ logger = logging.getLogger(__name__)
 timing_logger = logging.getLogger("uvicorn.error")
 STATIC = ROOT / "static"
 chat_lock = asyncio.Lock()
+# 存活中的聊天泵任务（防 GC；断线后回合仍要跑完入库）
+_pump_tasks: set[asyncio.Task] = set()
 initialize_store()
 TRACE_CONTENT_CHARS = 20_000
 
@@ -273,6 +279,61 @@ def render_context_prompt(messages: list[dict[str, Any]]) -> str:
     return prompt
 
 
+# 长对话滚动压缩（默认关闭，CHAT_COMPACT_AFTER_TURNS=0 即停用）：
+# 单位是「轮」（一问一答=2 条消息），代码内部 ×2 换成消息数。
+#   AFTER  ：对话超过这么多轮才启用压缩，短对话完全走原来的会话恢复路径
+#   KEEP   ：无论怎么压，最近这么多轮永远保留原文
+#   STEP   ：每积累这么多轮的新内容，就重新把旧内容折进摘要一次
+COMPACT_AFTER_TURNS = int(os.environ.get("CHAT_COMPACT_AFTER_TURNS", "0"))
+COMPACT_KEEP_TURNS = int(os.environ.get("CHAT_COMPACT_KEEP_TURNS", "8"))
+COMPACT_STEP_TURNS = int(os.environ.get("CHAT_COMPACT_STEP_TURNS", "50"))
+
+
+def _render_transcript(messages: list[dict[str, Any]]) -> str:
+    lines = []
+    for message in messages:
+        role = "用户" if message["role"] == "user" else "Evan"
+        text = (message.get("text") or "").strip()
+        if text:
+            lines.append(f"{role}: {text}")
+    return "\n\n".join(lines)
+
+
+async def maybe_compact(conv_id: str) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """长对话滚动压缩。返回 (window_messages, summary)：
+    - (None, None)  → 无需压缩，照常走会话恢复
+    - (window, summary) → 走无会话路径，把 window 当上下文文本喂，summary 作前情提要
+    摘要生成失败时降级到"只保留最近对话"，绝不抛错、也绝不删库里的数据。"""
+    if COMPACT_AFTER_TURNS <= 0:
+        return None, None
+    threshold = COMPACT_AFTER_TURNS * 2
+    rows, _, _ = conversation_messages(conv_id)
+    if len(rows) <= threshold:
+        return None, None
+    keep = max(2, COMPACT_KEEP_TURNS * 2)
+    step = max(2, COMPACT_STEP_TURNS * 2)
+    older = rows[:-keep]
+    recent = rows[-keep:]
+    summary, through_id = get_compaction_state(conv_id)
+    unsummarized = [m for m in older if m["id"] > through_id]
+    if older and (through_id == 0 or len(unsummarized) >= step):
+        transcript = _render_transcript(unsummarized)
+        try:
+            new_summary = await summarize_conversation(transcript, prev_summary=summary)
+        except Exception:
+            logger.exception("conversation compaction summary failed conv=%s", conv_id)
+            new_summary = ""
+        if new_summary:
+            summary, through_id = new_summary, older[-1]["id"]
+            set_compaction_state(conv_id, summary, through_id)
+        elif through_id == 0:
+            # 摘要暂时生成不了、又还没有任何旧摘要兜底：
+            # 只保留最近对话以避免撞上下文上限（完整记录仍在库里）。
+            return recent, "（较早对话的摘要暂时无法生成，已仅保留最近对话；完整记录仍在数据库里。）"
+    window = [m for m in rows if m["id"] > through_id]
+    return window, (summary or None)
+
+
 # 可选的"品牌版"首页：私有素材不进公开仓库，运行时若数据目录里有
 # index.branded.html 就优先用它（每次请求都查，替换文件后无需重启）。
 BRANDED_INDEX = Path(
@@ -372,14 +433,18 @@ async def chat(body: ChatBody) -> StreamingResponse:
     )
 
     async def sse():
-        if chat_lock.locked():
+        # 旧实现是 locked() 就直接报错——前端 roll 时先 abort 再立刻发新请求，
+        # 服务器还没来得及感知断开，必撞"上一条消息仍在回复"。改成等锁：
+        # 旧的 SSE 生成器最迟在下一次心跳（15s）被取消并放锁，20s 足够。
+        try:
+            await asyncio.wait_for(chat_lock.acquire(), timeout=20)
+        except asyncio.TimeoutError:
             payload = json.dumps(
                 {"message": "上一条消息仍在回复"},
                 ensure_ascii=False,
             )
             yield f"event: error\ndata: {payload}\n\n"
             return
-        await chat_lock.acquire()
         conv_id = None
         user_message_id = None
         branch_restore_id = None
@@ -388,10 +453,14 @@ async def chat(body: ChatBody) -> StreamingResponse:
         response_thinking = ""
         response_traces: list[dict] = []
         try:
+            # roll/重发时旧回合可能还在后台跑：先打断它再开新回合，
+            # 而不是直接把用户顶回去
+            await get_registry().interrupt_busy()
             await get_registry().assert_available()
             display_message = body.message.strip()
             current_attachment_items = attachment_items
             context_messages = None
+            earlier_summary = None
             if body.edit_message_id is not None:
                 prepared = prepare_edit_turn(
                     requested_conv_id or "",
@@ -432,11 +501,27 @@ async def chat(body: ChatBody) -> StreamingResponse:
                 ensure_ascii=False,
             )
             yield f"event: conversation\ndata: {payload}\n\n"
+            # 长对话滚动压缩：只对普通新回合生效（编辑/重试已自带上下文）。
+            # 命中时改走"无会话 + 历史当文本喂"路径，把上下文长度压回可控范围。
+            if not is_branch_turn:
+                window_messages, earlier_summary = await maybe_compact(conv_id)
+                if window_messages is not None:
+                    context_messages = window_messages
+                    resume_id = None
             prompt = (
                 render_context_prompt(context_messages)
                 if context_messages
                 else display_message
             )
+            if earlier_summary:
+                prompt = (
+                    "<对话前情摘要>\n"
+                    "以下是这段对话较早内容的摘要（原文已从上下文省略以控制长度，"
+                    "但仍完整存在于记录里）。把它当作你和对方之前聊过的背景：\n\n"
+                    f"{earlier_summary}\n"
+                    "</对话前情摘要>\n\n"
+                    f"{prompt}"
+                )
             recalled = recall_memory(display_message)
             if recalled:
                 prompt = (
@@ -479,76 +564,99 @@ async def chat(body: ChatBody) -> StreamingResponse:
                 async for c in stream:
                     yield c
 
-            heartbeat_interval = 15
-            chunk_iter = _merged().__aiter__()
-            exhausted = False
-            while not exhausted:
+            # ⚠️ 心跳绝不能用 wait_for 直接包生成器的 __anext__：
+            # 超时那一下会把 CancelledError 扔进生成器，整条流被连根关掉，
+            # 下一次 __anext__ 直接 StopAsyncIteration——表现为
+            # "模型思考超过 15 秒的回合全部静默断流、回复丢失"。
+            # 现在改成：后台泵任务消费生成器 → 队列，心跳只对队列 get 超时。
+            # 泵不依赖客户端连接：浏览器断了，回合照样跑完、照样入库。
+            outq: asyncio.Queue = asyncio.Queue()
+
+            async def pump():
+                nonlocal response_text, response_thinking
+                nonlocal branch_committed
                 try:
-                    chunk = await asyncio.wait_for(
-                        chunk_iter.__anext__(),
+                    async for chunk in _merged():
+                        if chunk["event"] == "delta":
+                            response_text += chunk.get("text", "")
+                        elif chunk["event"] == "thinking":
+                            response_thinking += chunk.get("text", "")
+                        elif chunk["event"] == "tool_use":
+                            response_traces.append({
+                                "type": "tool_use",
+                                "id": chunk.get("id"),
+                                "name": chunk.get("name"),
+                                "input": chunk.get("input"),
+                                "text_offset": len(response_text.rstrip()),
+                            })
+                        elif chunk["event"] == "tool_result":
+                            response_traces.append({
+                                "type": "tool_result",
+                                "tool_use_id": chunk.get("tool_use_id"),
+                                "content": trace_content(chunk.get("content")),
+                                "is_error": chunk.get("is_error", False),
+                            })
+                        elif chunk["event"] == "done":
+                            logger.info(
+                                "claude_raw_response request_id=%s conv_id=%s raw=%r",
+                                request_id,
+                                conv_id,
+                                response_text,
+                            )
+                            if response_traces and not response_thinking:
+                                try:
+                                    trace_sum = await summarize_traces(
+                                        response_traces,
+                                    )
+                                    if trace_sum:
+                                        response_traces.insert(0, {
+                                            "type": "summary",
+                                            "text": trace_sum,
+                                        })
+                                        await outq.put(("chunk", {
+                                            "event": "trace_summary",
+                                            "text": trace_sum,
+                                        }))
+                                except Exception:
+                                    logger.exception("trace summary failed")
+                            assistant_message_id = complete_turn(
+                                conv_id,
+                                chunk["session_id"],
+                                response_text,
+                                response_thinking,
+                                response_traces,
+                            )
+                            chunk["conversation_id"] = conv_id
+                            chunk["assistant_message_id"] = assistant_message_id
+                            branch_committed = True
+                        await outq.put(("chunk", chunk))
+                    await outq.put(("end", None))
+                except Exception as exc:
+                    await outq.put(("exc", exc))
+
+            pump_task = asyncio.create_task(
+                pump(), name=f"chat-pump-{request_id}",
+            )
+            # 生成器被取消后本地引用会消失，挂到模块级集合防 GC 掐掉泵
+            _pump_tasks.add(pump_task)
+            pump_task.add_done_callback(_pump_tasks.discard)
+
+            heartbeat_interval = 15
+            while True:
+                try:
+                    kind, item = await asyncio.wait_for(
+                        outq.get(),
                         timeout=heartbeat_interval,
                     )
-                except StopAsyncIteration:
-                    break
                 except asyncio.TimeoutError:
                     yield ": heartbeat\n\n"
                     continue
-
-                if chunk["event"] == "delta":
-                    response_text += chunk.get("text", "")
-                elif chunk["event"] == "thinking":
-                    response_thinking += chunk.get("text", "")
-                elif chunk["event"] == "tool_use":
-                    response_traces.append({
-                        "type": "tool_use",
-                        "id": chunk.get("id"),
-                        "name": chunk.get("name"),
-                        "input": chunk.get("input"),
-                        "text_offset": len(response_text.rstrip()),
-                    })
-                elif chunk["event"] == "tool_result":
-                    response_traces.append({
-                        "type": "tool_result",
-                        "tool_use_id": chunk.get("tool_use_id"),
-                        "content": trace_content(chunk.get("content")),
-                        "is_error": chunk.get("is_error", False),
-                    })
-                elif chunk["event"] == "done":
-                    logger.info(
-                        "claude_raw_response request_id=%s conv_id=%s raw=%r",
-                        request_id,
-                        conv_id,
-                        response_text,
-                    )
-                    if response_traces and not response_thinking:
-                        try:
-                            trace_sum = await summarize_traces(
-                                response_traces,
-                            )
-                            if trace_sum:
-                                response_traces.insert(0, {
-                                    "type": "summary",
-                                    "text": trace_sum,
-                                })
-                                ts_data = json.dumps(
-                                    {"text": trace_sum},
-                                    ensure_ascii=False,
-                                )
-                                yield f"event: trace_summary\ndata: {ts_data}\n\n"
-                        except Exception:
-                            logger.exception("trace summary failed")
-                    assistant_message_id = complete_turn(
-                        conv_id,
-                        chunk["session_id"],
-                        response_text,
-                        response_thinking,
-                        response_traces,
-                    )
-                    chunk["conversation_id"] = conv_id
-                    chunk["assistant_message_id"] = assistant_message_id
-                    branch_committed = True
-                name = chunk.pop("event")
-                data = json.dumps(chunk, ensure_ascii=False)
+                if kind == "end":
+                    break
+                if kind == "exc":
+                    raise item
+                name = item.pop("event")
+                data = json.dumps(item, ensure_ascii=False)
                 yield f"event: {name}\ndata: {data}\n\n"
         except ConversationNotFound:
             if branch_restore_id and not branch_committed:

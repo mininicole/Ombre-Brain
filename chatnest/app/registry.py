@@ -80,6 +80,16 @@ class ConvRegistry:
             if actor is not None and actor.alive and actor.busy:
                 raise ActorBusyError("上一条消息仍在回复")
 
+    async def interrupt_busy(self, timeout: float = 12.0) -> None:
+        """旧回合还在跑时打断它并等它收尾，给新回合让路。"""
+        actor = self._actor
+        if actor is None or not actor.alive or not actor.busy:
+            return
+        await actor.interrupt()
+        deadline = monotonic() + timeout
+        while actor.busy and actor.alive and monotonic() < deadline:
+            await asyncio.sleep(0.2)
+
     async def invalidate(self, conv_id: str | None = None) -> None:
         async with self._lock:
             actor = self._actor

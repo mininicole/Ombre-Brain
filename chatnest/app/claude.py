@@ -443,3 +443,69 @@ async def summarize_tool_use(tool_name: str, tool_input, tool_output: str) -> st
         for ch in ['"', "'", '"', '"', '。', '.', '，', ',']:
             caption = caption.strip(ch)
     return caption[:20] if caption else ""
+
+
+CONVERSATION_SUMMARY_PROMPT = (
+    "你是一个对话记忆压缩器。你会收到一段人和 AI 伴侣「Evan」之间较早的对话，"
+    "有时还附带一份更早的已有摘要。你的任务是输出一段中文摘要，"
+    "把这段对话里值得记住的东西浓缩下来：聊过的话题、发生的事、对方的情绪和状态、"
+    "达成的约定或决定、以及关系里的重要细节。"
+    "要求：第三人称叙述，保留具体信息（名字、时间、事件、承诺），不要逐句复述，"
+    "不要评论，不要加称呼或问候。如果附带了旧摘要，把旧摘要和新对话融合成一份连贯的摘要，"
+    "不要丢掉旧摘要里的关键信息。长度控制在 400 字以内。只输出摘要正文。"
+)
+
+
+async def summarize_conversation(transcript: str, prev_summary: str = "") -> str:
+    """把较早的一段对话（可选：加上更早的已有摘要）压成一段前情摘要。
+    失败/关闭时返回空串，调用方自行降级。"""
+    if CHAT_DISABLE_SUMMARIES:
+        return ""
+    if not transcript.strip() and not prev_summary.strip():
+        return ""
+    parts = []
+    if prev_summary.strip():
+        parts.append("【已有的更早摘要】\n" + prev_summary.strip())
+    if transcript.strip():
+        parts.append("【需要纳入的新对话】\n" + transcript.strip()[:16000])
+    user_input = "\n\n".join(parts)
+    async with _haiku_sem:
+        options = ClaudeAgentOptions(
+            model="claude-haiku-4-5",
+            system_prompt=CONVERSATION_SUMMARY_PROMPT,
+            allowed_tools=[],
+            max_turns=1,
+            max_budget_usd=0.02,
+            include_partial_messages=True,
+            thinking={"type": "disabled"},
+            setting_sources=[],
+            cwd=PROJECT_DIR,
+        )
+        client = ClaudeSDKClient(options)
+        text = ""
+        try:
+            await client.connect()
+            await client.query(user_input)
+            async for sdk_message in client.receive_response():
+                if isinstance(sdk_message, StreamEvent):
+                    event = sdk_message.event
+                    if event.get("type") != "content_block_delta":
+                        continue
+                    delta = event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text += delta.get("text", "")
+                elif isinstance(sdk_message, AssistantMessage):
+                    for block in sdk_message.content:
+                        block_text = getattr(block, "text", "")
+                        if block_text:
+                            text += block_text
+                elif isinstance(sdk_message, ResultMessage):
+                    if not text and sdk_message.result:
+                        text = sdk_message.result
+                    break
+        finally:
+            await client.disconnect()
+        summary = text.strip()
+        if not summary or "not logged in" in summary.lower():
+            return ""
+        return summary

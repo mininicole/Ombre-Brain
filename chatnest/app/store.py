@@ -123,6 +123,24 @@ def initialize_store() -> None:
                 ADD COLUMN latest_session_id TEXT
                 """
             )
+        conversation_columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(conversations)").fetchall()
+        }
+        if "compact_summary" not in conversation_columns:
+            db.execute(
+                """
+                ALTER TABLE conversations
+                ADD COLUMN compact_summary TEXT NOT NULL DEFAULT ''
+                """
+            )
+        if "compact_through_id" not in conversation_columns:
+            db.execute(
+                """
+                ALTER TABLE conversations
+                ADD COLUMN compact_through_id INTEGER NOT NULL DEFAULT 0
+                """
+            )
         migrated = db.execute(
             "SELECT value FROM store_meta WHERE key = 'legacy_migrated'"
         ).fetchone()
@@ -769,6 +787,32 @@ def conversation_messages(
     messages = _rows_to_messages(rows)
     next_before_id = messages[0]["id"] if has_more and messages else None
     return messages, has_more, next_before_id
+
+
+def get_compaction_state(conv_id: str) -> tuple[str, int]:
+    """长对话滚动压缩状态：(已生成的前情摘要, 摘要覆盖到的最大 message id)。"""
+    resolved = resolve_conversation(conv_id)
+    if not resolved:
+        raise ConversationNotFound("conversation not found")
+    with _connect() as db:
+        row = db.execute(
+            "SELECT compact_summary, compact_through_id FROM conversations WHERE conv_id = ?",
+            (resolved,),
+        ).fetchone()
+    if not row:
+        return "", 0
+    return (row["compact_summary"] or "", int(row["compact_through_id"] or 0))
+
+
+def set_compaction_state(conv_id: str, summary: str, through_id: int) -> None:
+    resolved = resolve_conversation(conv_id)
+    if not resolved:
+        raise ConversationNotFound("conversation not found")
+    with _connect() as db:
+        db.execute(
+            "UPDATE conversations SET compact_summary = ?, compact_through_id = ? WHERE conv_id = ?",
+            (summary, int(through_id), resolved),
+        )
 
 
 def rename_conversation(conv_id: str, title: str) -> None:

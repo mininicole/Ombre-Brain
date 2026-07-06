@@ -90,6 +90,16 @@ class ConvActor:
         )
         return outbox
 
+    async def interrupt(self) -> None:
+        """打断正在进行的回合（roll/新消息顶掉旧回合用）。"""
+        client = self._client
+        if client is None or not self.busy:
+            return
+        try:
+            await client.interrupt()
+        except Exception:
+            logger.exception("interrupt failed for conv=%s", self.conv_id)
+
     async def close(self) -> None:
         if self.closed:
             return
@@ -155,9 +165,13 @@ class ConvActor:
                     got_streaming_text = True
                     await request.outbox.put({"event": "delta", "text": text})
                 elif delta.get("type") == "thinking_delta":
-                    await request.outbox.put(
-                        {"event": "thinking", "text": delta.get("thinking", "")}
-                    )
+                    # Fable 5 经旧版 CLI 会吐出全空的 thinking 块，
+                    # 空串转发出去只会让前端画一条空白思考链
+                    thinking_text = delta.get("thinking", "")
+                    if thinking_text:
+                        await request.outbox.put(
+                            {"event": "thinking", "text": thinking_text}
+                        )
             elif isinstance(sdk_message, (_AssistantMessage, _UserMessage)):
                 for block in getattr(sdk_message, "content", []) or []:
                     if isinstance(block, _TextBlock) and not got_streaming_text:

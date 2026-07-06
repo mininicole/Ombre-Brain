@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git nodejs npm 
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code CLI：ChatNest 的运行时，认证走 CLAUDE_CODE_OAUTH_TOKEN（fly secrets）
-RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
+# @latest：2.1.198 时代 Fable 5 的 thinking 块落盘是空的，升级 CLI 换新思考流格式
+RUN npm install -g @anthropic-ai/claude-code@latest && npm cache clean --force
 
 # Install dependencies first (leverage Docker cache)
 # 先装依赖（利用 Docker 缓存）
