@@ -612,12 +612,19 @@ async def api_recall(request):
     # domain 过滤：TG Evan / TG Gale 各自只浮自家的桶；多租户场景必须严格隔离
     domain = str(body.get("domain") or "").strip()
     strict_domain = bool(body.get("strict_domain", bool(domain)))
+    # 2026-07-07: TG 客户端可传 include_recent 让 search 之后追加"最近未解决桶"
+    # 共享 max_tokens 预算，token 严格不翻倍。默认 0 = 老行为。
+    try:
+        include_recent = int(body.get("include_recent") or 0)
+    except (TypeError, ValueError):
+        include_recent = 0
     try:
         text = await breath(
             query=query,
             max_tokens=max(500, min(max_tokens, 10000)),
             max_results=max(1, min(max_results, 20)),
             domain=domain,
+            include_recent=max(0, min(include_recent, 10)),
         )
         # Night-Fall auto-surface — query 分支默认不触发，这里手动调一下，
         # 让 REST 客户端也能有"梦自己浮上来"的体验。
@@ -835,8 +842,9 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
     arousal: float = -1,
     max_results: int = 5,
     importance_min: int = -1,
+    include_recent: int = 0,  # 2026-07-07：search 分支追加 N 条"最近未解决桶"（共享 max_tokens）
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认5,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认5,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,在关键词/向量匹配之后再追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），共享 max_tokens 预算，token 总量不翻倍。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1165,6 +1173,52 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
         except Exception as e:
             logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
             continue
+
+    # --- Recent-topup: append N most-recent unresolved buckets (2026-07-07) ---
+    # --- 最近未解决桶追加：让 TG/长文本客户端也能享受"专注当下"的浮现效果 ---
+    # 共享 max_tokens 预算——search 用了多少，这里只能用剩下的。绝不翻倍。
+    # 排除:已在 matches / results 里的、钉桶、feel、permanent、resolved。
+    # 排序:created 倒序,取 top include_recent 条。
+    if include_recent > 0 and token_used < max_tokens:
+        try:
+            all_buckets_recent = await bucket_mgr.list_all(include_archive=False)
+            if domain_filter:
+                target_set_r = {d.lower() for d in domain_filter}
+                all_buckets_recent = [
+                    b for b in all_buckets_recent
+                    if {str(d).lower() for d in (b["metadata"].get("domain") or ([b["metadata"].get("domain")] if isinstance(b["metadata"].get("domain"), str) else []))} & target_set_r
+                ]
+            matched_ids_now = {b["id"] for b in matches}
+            recent_pool = [
+                b for b in all_buckets_recent
+                if b["id"] not in matched_ids_now
+                and not b["metadata"].get("pinned", False)
+                and not b["metadata"].get("protected", False)
+                and not b["metadata"].get("resolved", False)
+                and b["metadata"].get("type") not in ("permanent", "feel")
+            ]
+            recent_pool.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+            appended = 0
+            for b in recent_pool:
+                if appended >= include_recent or token_used >= max_tokens:
+                    break
+                try:
+                    clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                    summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                    summary_tokens = count_tokens_approx(summary)
+                    if token_used + summary_tokens > max_tokens:
+                        break
+                    await bucket_mgr.touch(b["id"])
+                    results.append(f"[最近] [bucket_id:{b['id']}] {summary}")
+                    token_used += summary_tokens
+                    appended += 1
+                except Exception as e:
+                    logger.warning(f"recent-topup dehydrate 失败: {e}")
+                    continue
+            if appended:
+                logger.info(f"recent-topup appended {appended} bucket(s), token_used={token_used}/{max_tokens}")
+        except Exception as e:
+            logger.warning(f"recent-topup 追加失败: {e}")
 
     # --- Random surfacing: when search returns < 3, 40% chance to float old memories ---
     # --- 随机浮现：检索结果不足 3 条时，40% 概率从低权重旧桶里漂上来 ---
