@@ -550,6 +550,11 @@ async def chat(body: ChatBody) -> StreamingResponse:
                 if window_messages is not None:
                     context_messages = window_messages
                     resume_id = None
+                    # 明面提示：告诉前端这一回合发生了滚动压缩，画一条分隔线
+                    compact_payload = json.dumps(
+                        {"kept": len(window_messages)}, ensure_ascii=False,
+                    )
+                    yield f"event: compacted\ndata: {compact_payload}\n\n"
             prompt = (
                 render_context_prompt(context_messages)
                 if context_messages
