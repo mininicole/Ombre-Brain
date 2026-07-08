@@ -29,6 +29,7 @@ import os
 import math
 import logging
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -39,6 +40,28 @@ from rapidfuzz import fuzz
 from utils import generate_bucket_id, sanitize_name, safe_path, now_iso
 
 logger = logging.getLogger("ombre_brain.bucket")
+
+
+def _atomic_write_text(path: str, text: str) -> None:
+    """
+    Atomic write: temp file in same dir → fsync → os.replace into place.
+    原子写：崩溃/断电时文件要么是旧的完整版、要么是新的完整版，绝不出现半截。
+    os.replace 在同一文件系统上是原子替换（POSIX + Windows 均是）。
+    """
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class BucketManager:
@@ -201,8 +224,7 @@ class BucketManager:
         file_path = safe_path(target_dir, filename)
 
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
+            _atomic_write_text(file_path, frontmatter.dumps(post))
         except OSError as e:
             logger.error(f"Failed to write bucket file / 写入桶文件失败: {file_path}: {e}")
             raise
@@ -298,6 +320,8 @@ class BucketManager:
                 post["importance"] = 10  # pinned → lock importance to 10
         if "digested" in kwargs:
             post["digested"] = bool(kwargs["digested"])
+        if "anchor" in kwargs:
+            post["anchor"] = bool(kwargs["anchor"])
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
 
@@ -305,8 +329,7 @@ class BucketManager:
         post["last_active"] = now_iso()
 
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
+            _atomic_write_text(file_path, frontmatter.dumps(post))
         except OSError as e:
             logger.error(f"Failed to write bucket update / 写入桶更新失败: {file_path}: {e}")
             return False
@@ -319,8 +342,7 @@ class BucketManager:
         domain = post.get("domain") or ["未分类"]
         if kwargs.get("pinned") and post.get("type") != "permanent":
             post["type"] = "permanent"
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
+            _atomic_write_text(file_path, frontmatter.dumps(post))
             self._move_bucket(file_path, self.permanent_dir, domain)
 
         logger.info(f"Updated bucket / 更新记忆桶: {bucket_id}")
@@ -338,25 +360,47 @@ class BucketManager:
     # def _extract_auto_keywords(self, content): ...
 
     # ---------------------------------------------------------
-    # Delete bucket
-    # 删除桶
+    # Delete bucket (soft delete)
+    # 删除桶（软删除）
     # ---------------------------------------------------------
     async def delete(self, bucket_id: str) -> bool:
         """
-        Delete a memory bucket file.
-        删除指定的记忆桶文件。
+        Soft-delete a memory bucket: stamp `deleted_at` and move to archive/.
+        记忆不消失，只是淡去——不做物理删除，移入 archive/ 并打上
+        deleted_at 时间戳，随时可以捞回来。embedding 由调用方清理。
         """
         file_path = self._find_bucket_file(bucket_id)
         if not file_path:
             return False
 
+        # Already in archive: just stamp deleted_at, don't move again
+        # 已在归档区：只补时间戳，不重复移动
+        in_archive = os.path.normpath(file_path).startswith(os.path.normpath(self.archive_dir))
+
         try:
-            os.remove(file_path)
-        except OSError as e:
-            logger.error(f"Failed to delete bucket file / 删除桶文件失败: {file_path}: {e}")
+            post = frontmatter.load(file_path)
+            post["deleted_at"] = now_iso()
+            post["type"] = "archived"
+
+            if in_archive:
+                _atomic_write_text(file_path, frontmatter.dumps(post))
+            else:
+                domain = post.get("domain") or ["未分类"]
+                primary_domain = sanitize_name(domain[0]) if domain else "未分类"
+                archive_subdir = os.path.join(self.archive_dir, primary_domain)
+                os.makedirs(archive_subdir, exist_ok=True)
+                dest = safe_path(archive_subdir, os.path.basename(file_path))
+                # 防撞名：归档区已有同名文件时加 bucket_id 后缀，避免覆盖
+                if os.path.exists(str(dest)):
+                    stem = os.path.splitext(os.path.basename(file_path))[0]
+                    dest = safe_path(archive_subdir, f"{stem}_{bucket_id}.md")
+                _atomic_write_text(str(dest), frontmatter.dumps(post))
+                os.remove(file_path)
+        except Exception as e:
+            logger.error(f"Failed to soft-delete bucket / 软删除桶失败: {file_path}: {e}")
             return False
 
-        logger.info(f"Deleted bucket / 删除记忆桶: {bucket_id}")
+        logger.info(f"Soft-deleted bucket (moved to archive) / 软删除记忆桶: {bucket_id}")
         return True
 
     # ---------------------------------------------------------
@@ -381,8 +425,7 @@ class BucketManager:
             post["last_active"] = now_iso()
             post["activation_count"] = int(post.get("activation_count") or 0) + 1
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
+            _atomic_write_text(file_path, frontmatter.dumps(post))
 
             # --- Time ripple: boost nearby memories within ±48h ---
             # --- 时间涟漪：±48小时内的记忆轻微唤醒 ---
@@ -461,8 +504,7 @@ class BucketManager:
             post["activation_count"] = int(post.get("activation_count") or 0) + 1
 
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
+            _atomic_write_text(file_path, frontmatter.dumps(post))
         except OSError as e:
             logger.error(f"Failed to write bucket comment / 写入年轮失败: {file_path}: {e}")
             return None
@@ -519,8 +561,7 @@ class BucketManager:
                     current_count = float(post.get("activation_count") or 1)
                     # Store as float for fractional increments; calculate_score handles it
                     post["activation_count"] = round(current_count + 0.3, 1)
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(frontmatter.dumps(post))
+                    _atomic_write_text(file_path, frontmatter.dumps(post))
                     rippled += 1
                 except Exception:
                     continue
@@ -856,11 +897,14 @@ class BucketManager:
             os.makedirs(archive_subdir, exist_ok=True)
 
             dest = safe_path(archive_subdir, os.path.basename(file_path))
+            # 防撞名：archive 里已有同名文件时加 bucket_id 后缀，避免 shutil.move 覆盖
+            if os.path.exists(str(dest)) and os.path.normpath(str(dest)) != os.path.normpath(file_path):
+                stem = os.path.splitext(os.path.basename(file_path))[0]
+                dest = safe_path(archive_subdir, f"{stem}_{bucket_id}.md")
 
             # Update type marker then move file / 更新类型标记后移动文件
             post["type"] = "archived"
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(frontmatter.dumps(post))
+            _atomic_write_text(file_path, frontmatter.dumps(post))
 
             # Use shutil.move for cross-filesystem safety
             # 使用 shutil.move 保证跨文件系统安全

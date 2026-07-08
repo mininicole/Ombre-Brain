@@ -184,16 +184,35 @@ def _load_password_hash() -> str | None:
     return None
 
 
+# PBKDF2 iterations: 抗暴力破解。Fly 小机器上一次约 0.1-0.3s，登录低频可接受。
+_PBKDF2_ITERATIONS = 260_000
+
+
 def _save_password_hash(password: str) -> None:
     salt = secrets.token_hex(16)
-    h = hashlib.sha256(f"{salt}:{password}".encode()).hexdigest()
+    h = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), salt.encode(), _PBKDF2_ITERATIONS
+    ).hex()
     auth_file = _get_auth_file()
     os.makedirs(os.path.dirname(auth_file), exist_ok=True)
     with open(auth_file, "w", encoding="utf-8") as f:
-        _json_lib.dump({"password_hash": f"{salt}:{h}"}, f)
+        _json_lib.dump({"password_hash": f"pbkdf2:{_PBKDF2_ITERATIONS}:{salt}:{h}"}, f)
 
 
 def _verify_password_hash(password: str, stored: str) -> bool:
+    # New format: pbkdf2:<iterations>:<salt>:<hash>
+    if stored.startswith("pbkdf2:"):
+        try:
+            _, iters_s, salt, h = stored.split(":", 3)
+            iters = int(iters_s)
+        except (ValueError, TypeError):
+            return False
+        calc = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), salt.encode(), iters
+        ).hex()
+        return hmac.compare_digest(h, calc)
+    # Legacy format: <salt>:<sha256(salt:password)> — 老密码文件仍可登录，
+    # 登录成功后由 _verify_any_password 自动升级为 PBKDF2
     if ":" not in stored:
         return False
     salt, h = stored.split(":", 1)
@@ -217,7 +236,54 @@ def _verify_any_password(password: str) -> bool:
     stored = _load_password_hash()
     if not stored:
         return False
-    return _verify_password_hash(password, stored)
+    ok = _verify_password_hash(password, stored)
+    # 老格式验证通过 → 就地升级为 PBKDF2（此刻拿得到明文，机会只有登录这一瞬）
+    if ok and not stored.startswith("pbkdf2:"):
+        try:
+            _save_password_hash(password)
+            logger.info("Password hash upgraded to PBKDF2 / 密码哈希已升级")
+        except Exception as e:
+            logger.warning(f"Password hash upgrade failed / 哈希升级失败: {e}")
+    return ok
+
+
+# --- Login rate limiting / 登录限流 ---
+# 5 次失败 → 锁 15 分钟。按客户端 IP 记账（CF/Fly 反代后取 X-Forwarded-For 首值）。
+_login_failures: dict[str, dict] = {}
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCKOUT_SECONDS = 900
+
+
+def _client_ip(request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _login_locked(ip: str) -> bool:
+    entry = _login_failures.get(ip)
+    if not entry:
+        return False
+    if entry.get("locked_until", 0) > time.time():
+        return True
+    if entry.get("locked_until", 0):
+        _login_failures.pop(ip, None)  # lockout expired
+    return False
+
+
+def _login_record_failure(ip: str) -> None:
+    # Bound the table so it can't grow without limit
+    if len(_login_failures) > 1000:
+        now = time.time()
+        for k in [k for k, v in _login_failures.items() if v.get("locked_until", 0) < now]:
+            _login_failures.pop(k, None)
+    entry = _login_failures.setdefault(ip, {"count": 0, "locked_until": 0})
+    entry["count"] += 1
+    if entry["count"] >= _LOGIN_MAX_ATTEMPTS:
+        entry["locked_until"] = time.time() + _LOGIN_LOCKOUT_SECONDS
+        entry["count"] = 0
+        logger.warning(f"Login locked out for {ip} / 登录已锁定 15 分钟")
 
 
 def _create_session() -> str:
@@ -288,11 +354,16 @@ async def auth_login(request):
     except Exception:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
     password = body.get("password", "")
+    ip = _client_ip(request)
+    if _login_locked(ip):
+        return JSONResponse({"error": "尝试次数过多，请 15 分钟后再试"}, status_code=429)
     if _verify_any_password(password):
+        _login_failures.pop(ip, None)
         token = _create_session()
         resp = JSONResponse({"ok": True})
         resp.set_cookie("ombre_session", token, httponly=True, samesite="lax", max_age=86400 * 7)
         return resp
+    _login_record_failure(ip)
     return JSONResponse({"error": "密码错误"}, status_code=401)
 
 
@@ -929,6 +1000,7 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
             and b["metadata"].get("type") not in ("permanent", "feel")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
+            and not b["metadata"].get("anchor", False)  # anchor 桶不进默认浮现
         ]
 
         logger.info(
@@ -1195,6 +1267,7 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
                 and not b["metadata"].get("pinned", False)
                 and not b["metadata"].get("protected", False)
                 and not b["metadata"].get("resolved", False)
+                and not b["metadata"].get("anchor", False)
                 and b["metadata"].get("type") not in ("permanent", "feel")
             ]
             recent_pool.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
@@ -1229,6 +1302,7 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
             low_weight = [
                 b for b in all_buckets
                 if b["id"] not in matched_ids
+                and not b["metadata"].get("anchor", False)  # anchor 只在真命中时返回
                 and decay_engine.calculate_score(b["metadata"]) < 2.0
             ]
             if low_weight:
@@ -1479,12 +1553,12 @@ async def trace(
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
 
-    # --- Delete mode / 删除模式 ---
+    # --- Delete mode (soft delete) / 删除模式（软删除，移入归档区可找回）---
     if delete:
         success = await bucket_mgr.delete(bucket_id)
         if success:
             embedding_engine.delete_embedding(bucket_id)
-        return f"已遗忘记忆桶: {bucket_id}" if success else f"未找到记忆桶: {bucket_id}"
+        return f"已遗忘记忆桶(移入归档区,可找回): {bucket_id}" if success else f"未找到记忆桶: {bucket_id}"
 
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
@@ -1545,6 +1619,53 @@ async def trace(
         else:
             changed += " → 已取消隐藏，重新参与浮现"
     return f"已修改记忆桶 {bucket_id}: {changed}"
+
+
+# =============================================================
+# Tool 4.5: anchor / release — 坐标系标记（借鉴 upstream v2.5.0）
+# anchor 桶不出现在默认 breath 浮现，但关键词/向量检索命中时仍返回。
+# 硬上限 24 个——坐标太多就不是坐标了。
+# =============================================================
+_ANCHOR_LIMIT = 24
+
+
+@mcp.tool()
+async def anchor(bucket_id: str) -> str:
+    """把指定桶标记为 anchor(坐标)。anchor 桶不主动出现在默认 breath 浮现,但关键词/语义检索命中时仍返回。硬上限 24 个,满了要先 release。"""
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return f"未找到记忆桶: {bucket_id}"
+    if bucket["metadata"].get("anchor"):
+        return f"记忆桶 {bucket_id} 已经是 anchor。"
+
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        anchor_count = sum(1 for b in all_buckets if b["metadata"].get("anchor"))
+    except Exception as e:
+        return f"检查 anchor 数量失败: {e}"
+    if anchor_count >= _ANCHOR_LIMIT:
+        return f"anchor 已满({anchor_count}/{_ANCHOR_LIMIT})。先 release 一个再来。"
+
+    success = await bucket_mgr.update(bucket_id, anchor=True)
+    if not success:
+        return f"标记失败: {bucket_id}"
+    name = bucket["metadata"].get("name", bucket_id)
+    return f"已标记为 anchor: {name} ({anchor_count + 1}/{_ANCHOR_LIMIT})。它不再出现在默认浮现,检索命中时仍可达。"
+
+
+@mcp.tool()
+async def release(bucket_id: str) -> str:
+    """解除指定桶的 anchor 标记,桶恢复普通状态,重新参与默认 breath 浮现。pinned 状态不受影响。"""
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return f"未找到记忆桶: {bucket_id}"
+    if not bucket["metadata"].get("anchor"):
+        return f"记忆桶 {bucket_id} 不是 anchor,无需解除。"
+    success = await bucket_mgr.update(bucket_id, anchor=False)
+    if not success:
+        return f"解除失败: {bucket_id}"
+    name = bucket["metadata"].get("name", bucket_id)
+    return f"已解除 anchor: {name}。重新参与默认浮现。"
 
 
 # =============================================================
@@ -1686,11 +1807,17 @@ async def pulse(include_archive: bool = False) -> str:
     if not buckets:
         return status + "\n记忆库为空。"
 
+    anchor_count = sum(1 for b in buckets if b.get("metadata", {}).get("anchor"))
+    if anchor_count:
+        status += f"anchor 坐标: {anchor_count}/{_ANCHOR_LIMIT} 个\n"
+
     lines = []
     for b in buckets:
         meta = b.get("metadata", {})
         if meta.get("pinned") or meta.get("protected"):
             icon = "📌"
+        elif meta.get("anchor"):
+            icon = "⚓"
         elif meta.get("type") == "permanent":
             icon = "📦"
         elif meta.get("type") == "feel":
