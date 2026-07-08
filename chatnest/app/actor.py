@@ -204,8 +204,25 @@ class ConvActor:
                         })
             elif isinstance(sdk_message, ResultMessage):
                 result_seen = True
+                # 上下文体积估算：input + cache 读写合计。多轮 agentic 回合会累计、
+                # 数值偏大——偏大只会让滚动压缩提前触发，方向安全。
+                usage = getattr(sdk_message, "usage", None) or {}
+                context_tokens = 0
+                for key in (
+                    "input_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ):
+                    try:
+                        context_tokens += int(usage.get(key) or 0)
+                    except (TypeError, ValueError):
+                        pass
                 await request.outbox.put(
-                    {"event": "done", "session_id": sdk_message.session_id}
+                    {
+                        "event": "done",
+                        "session_id": sdk_message.session_id,
+                        "context_tokens": context_tokens,
+                    }
                 )
         if not result_seen:
             raise RuntimeError("Claude 连接提前结束")

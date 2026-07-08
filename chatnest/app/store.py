@@ -141,6 +141,13 @@ def initialize_store() -> None:
                 ADD COLUMN compact_through_id INTEGER NOT NULL DEFAULT 0
                 """
             )
+        if "compact_last_ctx_tokens" not in conversation_columns:
+            db.execute(
+                """
+                ALTER TABLE conversations
+                ADD COLUMN compact_last_ctx_tokens INTEGER NOT NULL DEFAULT 0
+                """
+            )
         migrated = db.execute(
             "SELECT value FROM store_meta WHERE key = 'legacy_migrated'"
         ).fetchone()
@@ -812,6 +819,32 @@ def set_compaction_state(conv_id: str, summary: str, through_id: int) -> None:
         db.execute(
             "UPDATE conversations SET compact_summary = ?, compact_through_id = ? WHERE conv_id = ?",
             (summary, int(through_id), resolved),
+        )
+
+
+def get_last_context_tokens(conv_id: str) -> int:
+    """上一回合底层会话实际吃掉的上下文 token 数（input + cache 读写合计）。"""
+    resolved = resolve_conversation(conv_id)
+    if not resolved:
+        return 0
+    with _connect() as db:
+        row = db.execute(
+            "SELECT compact_last_ctx_tokens FROM conversations WHERE conv_id = ?",
+            (resolved,),
+        ).fetchone()
+    if not row:
+        return 0
+    return int(row["compact_last_ctx_tokens"] or 0)
+
+
+def set_last_context_tokens(conv_id: str, tokens: int) -> None:
+    resolved = resolve_conversation(conv_id)
+    if not resolved:
+        return
+    with _connect() as db:
+        db.execute(
+            "UPDATE conversations SET compact_last_ctx_tokens = ? WHERE conv_id = ?",
+            (max(0, int(tokens)), resolved),
         )
 
 

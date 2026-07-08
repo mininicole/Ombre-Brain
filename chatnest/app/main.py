@@ -65,12 +65,14 @@ from app.store import (
     conversation_messages,
     ensure_conversation,
     get_compaction_state,
+    get_last_context_tokens,
     initialize_store,
     prepare_edit_turn,
     prepare_retry_turn,
     resolve_conversation,
     restore_branch,
     set_compaction_state,
+    set_last_context_tokens,
 )
 from app.uploads import (
     remove_conversation_uploads,
@@ -284,9 +286,19 @@ def render_context_prompt(messages: list[dict[str, Any]]) -> str:
 #   AFTER  ：对话超过这么多轮才启用压缩，短对话完全走原来的会话恢复路径
 #   KEEP   ：无论怎么压，最近这么多轮永远保留原文
 #   STEP   ：每积累这么多轮的新内容，就重新把旧内容折进摘要一次
+#   TOKEN_LIMIT：主触发器——上一回合底层会话实际吃掉的上下文 token 超过
+#     这个值就立刻压缩，不等轮数。思考过程和工具调用让 token 涨得比轮数
+#     快得多，光数轮数会放任会话膨胀到撞上 CC 自动压缩（20 万上限的天价
+#     总结）。0=关闭 token 触发。
 COMPACT_AFTER_TURNS = int(os.environ.get("CHAT_COMPACT_AFTER_TURNS", "0"))
 COMPACT_KEEP_TURNS = int(os.environ.get("CHAT_COMPACT_KEEP_TURNS", "8"))
 COMPACT_STEP_TURNS = int(os.environ.get("CHAT_COMPACT_STEP_TURNS", "50"))
+COMPACT_TOKEN_LIMIT = int(os.environ.get("CHAT_COMPACT_TOKEN_LIMIT", "100000"))
+
+# 底层 Claude Code 会话在接近上下文上限时会自动压缩，把一大篇英文总结
+# 当正文流出来（开头固定是这句）。识别到就整段折叠，不给前端刷屏。
+COMPACT_ECHO_MARKER = "This session is being continued from a previous conversation"
+COMPACT_ECHO_NOTICE = "（系统整理了一次长对话上下文，原文已折叠，不占用聊天内容。）"
 
 
 def _render_transcript(messages: list[dict[str, Any]]) -> str:
@@ -302,21 +314,43 @@ def _render_transcript(messages: list[dict[str, Any]]) -> str:
 async def maybe_compact(conv_id: str) -> tuple[list[dict[str, Any]] | None, str | None]:
     """长对话滚动压缩。返回 (window_messages, summary)：
     - (None, None)  → 无需压缩，照常走会话恢复
-    - (window, summary) → 走无会话路径，把 window 当上下文文本喂，summary 作前情提要
+    - (window, summary) → 本回合执行一次压缩：走无会话路径开新会话，把 window
+      当上下文文本喂、summary 作前情提要。新会话 id 照常由 complete_turn 入库，
+      之后的回合恢复这个新会话——压缩只发生在触发的那一个回合，
+      不会每回合都放弃会话恢复重喂全文（那是老版本烧配额的根源）。
+    触发条件（满足其一）：
+    - token 触发（主）：上一回合上下文超过 COMPACT_TOKEN_LIMIT
+    - 轮数触发（兜底）：超过 AFTER 轮，且从未压缩过或又积累了 STEP 轮新内容
     摘要生成失败时降级到"只保留最近对话"，绝不抛错、也绝不删库里的数据。"""
     if COMPACT_AFTER_TURNS <= 0:
         return None, None
-    threshold = COMPACT_AFTER_TURNS * 2
     rows, _, _ = conversation_messages(conv_id)
-    if len(rows) <= threshold:
-        return None, None
     keep = max(2, COMPACT_KEEP_TURNS * 2)
     step = max(2, COMPACT_STEP_TURNS * 2)
+    threshold = COMPACT_AFTER_TURNS * 2
+
+    token_due = (
+        COMPACT_TOKEN_LIMIT > 0
+        and get_last_context_tokens(conv_id) >= COMPACT_TOKEN_LIMIT
+    )
+    # 对话还很短时轮数触发不可能命中；token 触发例外——短对话也可能被
+    # 思考/工具调用吹胀，此时用全部原文重开会话，甩掉会话里的隐形负重。
+    if len(rows) <= keep and not token_due:
+        return None, None
+
+    summary, through_id = get_compaction_state(conv_id)
     older = rows[:-keep]
     recent = rows[-keep:]
-    summary, through_id = get_compaction_state(conv_id)
     unsummarized = [m for m in older if m["id"] > through_id]
-    if older and (through_id == 0 or len(unsummarized) >= step):
+    turns_due = (
+        len(rows) > threshold
+        and older
+        and (through_id == 0 or len(unsummarized) >= step)
+    )
+    if not (token_due or turns_due):
+        return None, None
+
+    if unsummarized:
         transcript = _render_transcript(unsummarized)
         try:
             new_summary = await summarize_conversation(transcript, prev_summary=summary)
@@ -329,8 +363,16 @@ async def maybe_compact(conv_id: str) -> tuple[list[dict[str, Any]] | None, str 
         elif through_id == 0:
             # 摘要暂时生成不了、又还没有任何旧摘要兜底：
             # 只保留最近对话以避免撞上下文上限（完整记录仍在库里）。
+            set_last_context_tokens(conv_id, 0)
             return recent, "（较早对话的摘要暂时无法生成，已仅保留最近对话；完整记录仍在数据库里。）"
+        # 摘要失败但有旧摘要：继续用旧摘要，未摘要的部分以原文留在 window 里
     window = [m for m in rows if m["id"] > through_id]
+    # 马上重开会话，旧会话的 token 计数作废；新会话的第一个 done 会刷新它
+    set_last_context_tokens(conv_id, 0)
+    logger.info(
+        "conversation compacted conv=%s trigger=%s window=%d summarized_through=%d",
+        conv_id, "token" if token_due else "turns", len(window), through_id,
+    )
     return window, (summary or None)
 
 
@@ -556,7 +598,37 @@ async def chat(body: ChatBody) -> StreamingResponse:
                     first = await stream.__anext__()
                 except (SessionResumeError, StopAsyncIteration):
                     logger.info("session resume failed for conv=%s, retrying without session", conv_id)
-                    retry_args = (prompt, conv_id, None, body.model,
+                    # 上下文都在丢失的会话里（压缩后尤其如此）——重试时把
+                    # 可见历史重建成文本（已压缩部分用摘要顶替），避免失忆。
+                    retry_prompt = prompt
+                    if not is_branch_turn and resume_id is not None:
+                        try:
+                            r_summary, r_through = get_compaction_state(conv_id)
+                            r_rows, _, _ = conversation_messages(conv_id)
+                            r_window = [m for m in r_rows if m["id"] > r_through]
+                            if r_window:
+                                retry_prompt = render_context_prompt(r_window)
+                                if r_summary:
+                                    retry_prompt = (
+                                        "<对话前情摘要>\n"
+                                        "以下是这段对话较早内容的摘要（原文已从上下文省略以控制长度，"
+                                        "但仍完整存在于记录里）。把它当作你和对方之前聊过的背景：\n\n"
+                                        f"{r_summary}\n"
+                                        "</对话前情摘要>\n\n"
+                                        f"{retry_prompt}"
+                                    )
+                                if recalled:
+                                    retry_prompt = (
+                                        "<recalled-memory>\n"
+                                        "以下是从家用记忆里检索到的相关片段，按相关度排序。"
+                                        "可能与这次请求相关，参考着用；不相关就忽略。\n\n"
+                                        f"{recalled}\n"
+                                        "</recalled-memory>\n\n"
+                                        f"{retry_prompt}"
+                                    )
+                        except Exception:
+                            logger.exception("resume recovery prompt failed conv=%s", conv_id)
+                    retry_args = (retry_prompt, conv_id, None, body.model,
                                   body.effort, body.extended, log_timing)
                     stream = stream_chat(*retry_args)
                     first = await stream.__anext__()
@@ -575,10 +647,38 @@ async def chat(body: ChatBody) -> StreamingResponse:
             async def pump():
                 nonlocal response_text, response_thinking
                 nonlocal branch_committed
+                # 底层 CC 自动压缩总结的拦截门：开头先攒着比对标记，
+                # undecided=还在攒 / pass=正常转发 / suppress=整段吞掉
+                echo_buf = ""
+                echo_state = "undecided"
                 try:
                     async for chunk in _merged():
                         if chunk["event"] == "delta":
                             response_text += chunk.get("text", "")
+                            if echo_state == "suppress":
+                                continue
+                            if echo_state == "undecided":
+                                echo_buf += chunk.get("text", "")
+                                probe = echo_buf.lstrip()
+                                if not probe:
+                                    continue
+                                if probe.startswith(COMPACT_ECHO_MARKER):
+                                    echo_state = "suppress"
+                                    await outq.put(("chunk", {
+                                        "event": "delta",
+                                        "text": COMPACT_ECHO_NOTICE,
+                                    }))
+                                    logger.warning(
+                                        "suppressed CC auto-compact echo conv=%s", conv_id,
+                                    )
+                                    continue
+                                if (
+                                    len(probe) < len(COMPACT_ECHO_MARKER)
+                                    and COMPACT_ECHO_MARKER.startswith(probe)
+                                ):
+                                    continue  # 还看不出来是不是，继续攒
+                                echo_state = "pass"
+                                chunk = {"event": "delta", "text": echo_buf}
                         elif chunk["event"] == "thinking":
                             response_thinking += chunk.get("text", "")
                         elif chunk["event"] == "tool_use":
@@ -597,6 +697,25 @@ async def chat(body: ChatBody) -> StreamingResponse:
                                 "is_error": chunk.get("is_error", False),
                             })
                         elif chunk["event"] == "done":
+                            # 回复比标记还短、到结束都没分出真假：原样放行
+                            if echo_state == "undecided" and echo_buf:
+                                echo_state = "pass"
+                                await outq.put(("chunk", {
+                                    "event": "delta",
+                                    "text": echo_buf,
+                                }))
+                            # 被拦下的自动压缩总结不入库——入库了会被未来的
+                            # 窗口重喂，等于把垃圾又塞回上下文
+                            if echo_state == "suppress":
+                                response_text = COMPACT_ECHO_NOTICE
+                            # 记录本回合上下文体积，作为下回合 token 触发的依据
+                            try:
+                                if chunk.get("context_tokens"):
+                                    set_last_context_tokens(
+                                        conv_id, int(chunk["context_tokens"]),
+                                    )
+                            except Exception:
+                                logger.exception("save context tokens failed conv=%s", conv_id)
                             logger.info(
                                 "claude_raw_response request_id=%s conv_id=%s raw=%r",
                                 request_id,
