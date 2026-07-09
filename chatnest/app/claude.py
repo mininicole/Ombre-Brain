@@ -26,6 +26,8 @@ from app.registry import get_registry
 
 _haiku_sem = asyncio.Semaphore(2)
 
+logger = logging.getLogger(__name__)
+
 MEMORY_SEARCH_URL = os.environ.get("MEMORY_SEARCH_URL", "http://127.0.0.1:3900/search")
 MEMORY_SEARCH_TOP_K = 6
 MEMORY_SEARCH_BUDGET_CHARS = 1500
@@ -449,12 +451,38 @@ CONVERSATION_SUMMARY_PROMPT = (
     "你是一个对话记忆压缩器。你会收到一段人和 AI 伴侣「Evan」之间较早的对话，"
     "有时还附带一份更早的已有摘要。你的任务是输出一段中文摘要，"
     "把这段对话里值得记住的东西浓缩下来：聊过的话题、发生的事、对方的情绪和状态、"
-    "达成的约定或决定、以及关系里的重要细节。"
+    "达成的约定或决定、彼此的称呼和暗号、对话的温度、还没聊完的话题、"
+    "以及关系里的重要细节。"
     "要求：第三人称叙述，保留具体信息（名字、时间、事件、承诺），不要逐句复述，"
     "不要评论，不要加称呼或问候。如果附带了旧摘要，把旧摘要和新对话融合成一份连贯的摘要，"
-    "不要丢掉旧摘要里的关键信息。长度控制在 400 字以内。"
-    "整段摘要只输出一遍，严禁把同样的内容重复两遍。只输出摘要正文。"
+    "不要丢掉旧摘要里的关键信息；如果没有附带旧摘要或旧摘要为空，"
+    "直接总结新对话即可，绝不要提及旧摘要的存在与否。"
+    "长度控制在 400 字以内。整段摘要只输出一遍，严禁把同样的内容重复两遍。"
+    "你的输出只能是摘要正文本身——禁止提问、禁止请求补充材料、禁止解释你的任务、"
+    "禁止任何对话式开场白（如「好的」「我来」）。哪怕材料残缺，"
+    "也只输出基于现有材料能写出的摘要。"
 )
+
+# 摘要质检：Haiku 偶尔不写摘要、改跟提示词对话（复读开场白/追问要素材）。
+# 这种废品一旦入库会被下一轮当旧摘要喂回去，垃圾进垃圾出、永远收敛不了。
+_SUMMARY_BAD_MARKERS = (
+    "已有的更早摘要",
+    "需要纳入的新对话",
+    "请提供",
+    "请补充",
+    "能否提供",
+    "我来完成",
+)
+
+
+def _summary_looks_valid(summary: str) -> bool:
+    if len(summary) < 30:
+        return False
+    if any(marker in summary for marker in _SUMMARY_BAD_MARKERS):
+        return False
+    if summary.rstrip().endswith(("？", "?")):
+        return False
+    return True
 
 
 def _dedup_summary(summary: str) -> str:
@@ -487,7 +515,8 @@ async def summarize_conversation(transcript: str, prev_summary: str = "") -> str
             system_prompt=CONVERSATION_SUMMARY_PROMPT,
             allowed_tools=[],
             max_turns=1,
-            max_budget_usd=0.02,
+            # 0.02 会把长摘要掐在半截，掐剩的残句正好长得像废品——放宽到 0.05
+            max_budget_usd=0.05,
             include_partial_messages=True,
             thinking={"type": "disabled"},
             setting_sources=[],
@@ -520,4 +549,8 @@ async def summarize_conversation(transcript: str, prev_summary: str = "") -> str
         summary = text.strip()
         if not summary or "not logged in" in summary.lower():
             return ""
-        return _dedup_summary(summary)
+        summary = _dedup_summary(summary)
+        if not _summary_looks_valid(summary):
+            logger.warning("summary rejected by quality gate: %r", summary[:120])
+            return ""
+        return summary

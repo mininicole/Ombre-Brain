@@ -137,6 +137,7 @@ class ConvActor:
         first_text_token_seen = False
         got_streaming_text = False
         result_seen = False
+        last_message_usage: dict | None = None
         async for sdk_message in self._client.receive_response():
             if not first_sdk_event_seen:
                 first_sdk_event_seen = True
@@ -153,6 +154,13 @@ class ConvActor:
                         raise RuntimeError("会话恢复失败")
             elif isinstance(sdk_message, StreamEvent):
                 event = sdk_message.event
+                if event.get("type") == "message_start":
+                    # 每次 API 调用开头都带这一次调用的真实上下文用量。
+                    # 只留最后一次的——它才是"会话现在有多大"。
+                    msg_usage = (event.get("message") or {}).get("usage") or {}
+                    if msg_usage:
+                        last_message_usage = msg_usage
+                    continue
                 if event.get("type") != "content_block_delta":
                     continue
                 delta = event.get("delta", {})
@@ -204,19 +212,21 @@ class ConvActor:
                         })
             elif isinstance(sdk_message, ResultMessage):
                 result_seen = True
-                # 上下文体积估算：input + cache 读写合计。多轮 agentic 回合会累计、
-                # 数值偏大——偏大只会让滚动压缩提前触发，方向安全。
-                usage = getattr(sdk_message, "usage", None) or {}
+                # 上下文体积 = 本回合【最后一次】API 调用的 input + cache 读写。
+                # 绝不能用 ResultMessage.usage 的合计——工具调用的回合里每一步
+                # 都重读全部上下文，加总会虚高好几倍，曾把压缩逼成每轮触发。
+                # 没捕获到 message_start 就报 0（宁可不触发，轮数兜底还在）。
                 context_tokens = 0
-                for key in (
-                    "input_tokens",
-                    "cache_read_input_tokens",
-                    "cache_creation_input_tokens",
-                ):
-                    try:
-                        context_tokens += int(usage.get(key) or 0)
-                    except (TypeError, ValueError):
-                        pass
+                if last_message_usage:
+                    for key in (
+                        "input_tokens",
+                        "cache_read_input_tokens",
+                        "cache_creation_input_tokens",
+                    ):
+                        try:
+                            context_tokens += int(last_message_usage.get(key) or 0)
+                        except (TypeError, ValueError):
+                            pass
                 await request.outbox.put(
                     {
                         "event": "done",
