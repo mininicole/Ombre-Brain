@@ -47,6 +47,7 @@ class ConvActor:
         self.closed = False
         self._client: ClaudeSDKClient | None = None
         self._fingerprint: str | None = None
+        self._session_id: str | None = None  # 当前连接正在跑的会话 id
         self._inbox: asyncio.Queue[TurnRequest | None] = asyncio.Queue()
         self._state_lock = asyncio.Lock()
         self._task = asyncio.create_task(
@@ -116,10 +117,24 @@ class ConvActor:
             finally:
                 self._client = None
                 self._fingerprint = None
+                self._session_id = None
 
     async def _ensure_client(self, request: TurnRequest) -> None:
         if self._client is not None and self._fingerprint == request.fingerprint:
-            return
+            # resume 语义：None=要求全新会话，具体 id=要求接着那个会话。
+            # 持久连接只有在"它正是被要求的那个会话"时才能复用——否则必须
+            # 真的断开重连。以前这里不看 resume：滚动压缩说"开新会话"被当
+            # 耳旁风，摘要+原文全部塞回同一个越滚越大的老会话，token 永远
+            # 降不下来，压缩每轮触发（2026-07-09 实锤 21.7 万 token 的会话）。
+            requested = getattr(request.options, "resume", None)
+            if requested is None and self._session_id is None:
+                return  # 新连接还没跑过回合，本来就是全新会话
+            if requested is not None and requested == self._session_id:
+                return  # 要的就是当前会话，接着聊
+            logger.info(
+                "session switch for conv=%s: %s -> %s",
+                self.conv_id, self._session_id, requested or "(new)",
+            )
         await self._disconnect()
         client = ClaudeSDKClient(request.options)
         await client.connect()
@@ -212,6 +227,7 @@ class ConvActor:
                         })
             elif isinstance(sdk_message, ResultMessage):
                 result_seen = True
+                self._session_id = sdk_message.session_id
                 # 上下文体积 = 本回合【最后一次】API 调用的 input + cache 读写。
                 # 绝不能用 ResultMessage.usage 的合计——工具调用的回合里每一步
                 # 都重读全部上下文，加总会虚高好几倍，曾把压缩逼成每轮触发。
