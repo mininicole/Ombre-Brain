@@ -11,7 +11,7 @@ python -m uvicorn app.main:app \
   --port "${CHATNEST_PORT:-8787}" &
 CHAT_PID=$!
 
-python -m night_fall.launcher &
+python /app/ombre_nightfall_launcher.py &
 OMBRE_PID=$!
 
 echo "[start] launching Gale memory process on localhost:8790"
@@ -19,6 +19,7 @@ OMBRE_BUCKETS_DIR=/app/buckets/gale \
 OMBRE_PORT=8790 \
 OMBRE_HOST=127.0.0.1 \
 OMBRE_AUTH_TOKEN="" \
+GALE_MCP_SLUG="" \
 GIST_TOKEN="" \
 STATE_GIST_URL="" \
 EVAN_SEND_SECRET="" \

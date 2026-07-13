@@ -3197,6 +3197,94 @@ async def chat_proxy(request):
     )
 
 
+# --- Gale MCP：通过秘密路径反代到独立记忆进程 ---
+_GALE_MCP_SLUG = os.environ.get("GALE_MCP_SLUG", "").strip()
+_GALE_MCP_BASE = "http://127.0.0.1:8790"
+_gale_mcp_client: "httpx.AsyncClient | None" = None
+_GALE_MCP_STRIPPED_HEADERS = {
+    b"host",
+    b"content-length",
+    b"connection",
+    b"keep-alive",
+    b"proxy-authenticate",
+    b"proxy-authorization",
+    b"te",
+    b"trailer",
+    b"transfer-encoding",
+    b"upgrade",
+    b"accept-encoding",
+}
+
+
+def _gale_mcp_headers(raw_headers):
+    """Drop hop-by-hop headers while preserving MCP session and SSE headers."""
+    blocked = set(_GALE_MCP_STRIPPED_HEADERS)
+    for name, value in raw_headers:
+        if name.lower() == b"connection":
+            blocked.update(part.strip().lower() for part in value.split(b",") if part.strip())
+    return [(name, value) for name, value in raw_headers if name.lower() not in blocked]
+
+
+def _get_gale_mcp_client() -> httpx.AsyncClient:
+    global _gale_mcp_client
+    if _gale_mcp_client is None:
+        _gale_mcp_client = httpx.AsyncClient(
+            base_url=_GALE_MCP_BASE,
+            timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
+        )
+    return _gale_mcp_client
+
+
+async def gale_mcp_proxy(request):
+    from starlette.background import BackgroundTask
+    from starlette.responses import PlainTextResponse, StreamingResponse
+
+    upstream_path = "/mcp"
+    path = request.path_params.get("path", "")
+    if path:
+        upstream_path += "/" + path
+    if request.url.query:
+        upstream_path += "?" + request.url.query
+
+    client = _get_gale_mcp_client()
+    try:
+        upstream_req = client.build_request(
+            request.method,
+            upstream_path,
+            headers=_gale_mcp_headers(request.headers.raw),
+            content=request.stream(),
+        )
+        upstream = await client.send(upstream_req, stream=True)
+    except httpx.HTTPError as exc:
+        logger.warning("Gale MCP proxy unavailable (%s)", type(exc).__name__)
+        return PlainTextResponse("bad gateway", status_code=502)
+
+    response = StreamingResponse(
+        upstream.aiter_raw(),
+        status_code=upstream.status_code,
+        background=BackgroundTask(upstream.aclose),
+    )
+    response.raw_headers = _gale_mcp_headers(upstream.headers.raw)
+    return response
+
+
+if _GALE_MCP_SLUG:
+    if len(_GALE_MCP_SLUG) != 32 or not all(
+        char.isascii() and (char.isalnum() or char in "-_")
+        for char in _GALE_MCP_SLUG
+    ):
+        raise RuntimeError("GALE_MCP_SLUG must be exactly 32 URL-safe characters")
+    mcp.custom_route(
+        f"/g-{_GALE_MCP_SLUG}/mcp",
+        methods=["GET", "POST", "DELETE"],
+    )(gale_mcp_proxy)
+    mcp.custom_route(
+        f"/g-{_GALE_MCP_SLUG}/mcp/{{path:path}}",
+        methods=["GET", "POST", "DELETE"],
+    )(gale_mcp_proxy)
+    logger.info("Gale MCP proxy routes enabled")
+
+
 # --- 碎碎念：Evan 的主动消息记录 + 当前 bio（来自 evan-bot 的 state gist）---
 _musings_cache = {"ts": 0.0, "data": None}
 
@@ -3877,6 +3965,11 @@ if __name__ == "__main__":
         else:
             logger.warning("⚠️  Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
 
-        uvicorn.run(_app, host=os.environ.get("OMBRE_HOST", "0.0.0.0"), port=OMBRE_PORT)
+        uvicorn.run(
+            _app,
+            host=os.environ.get("OMBRE_HOST", "0.0.0.0"),
+            port=OMBRE_PORT,
+            access_log=not bool(_GALE_MCP_SLUG),
+        )
     else:
         mcp.run(transport=transport)
