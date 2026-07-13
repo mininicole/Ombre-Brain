@@ -799,7 +799,7 @@
 // ========================================
 async function checkAuth() {
   try {
-    const resp = await fetch('/auth/status');
+    const resp = await fetch(DASH_BASE + '/auth/status');
     const data = await resp.json();
     if (data.setup_needed) {
       document.getElementById('auth-subtitle').textContent = '首次设置';
@@ -826,7 +826,7 @@ async function doSetup() {
   const p2 = document.getElementById('auth-setup-pwd2').value;
   if (p1.length < 6) return showAuthError('密码至少6位');
   if (p1 !== p2) return showAuthError('两次密码不一致');
-  const resp = await fetch('/auth/setup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: p1}) });
+  const resp = await fetch(DASH_BASE + '/auth/setup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: p1}) });
   if (resp.ok) {
     document.getElementById('auth-overlay').style.display = 'none';
   } else {
@@ -837,7 +837,7 @@ async function doSetup() {
 
 async function doLogin() {
   const pwd = document.getElementById('auth-login-pwd').value;
-  const resp = await fetch('/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pwd}) });
+  const resp = await fetch(DASH_BASE + '/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pwd}) });
   if (resp.ok) {
     document.getElementById('auth-overlay').style.display = 'none';
   } else {
@@ -847,7 +847,7 @@ async function doLogin() {
 }
 
 async function doLogout() {
-  await fetch('/auth/logout', { method: 'POST' });
+  await fetch(DASH_BASE + '/auth/logout', { method: 'POST' });
   document.getElementById('auth-setup-form').style.display = 'none';
   document.getElementById('auth-login-form').style.display = 'none';
   document.getElementById('auth-login-form').style.display = 'block';
@@ -863,7 +863,7 @@ async function changePassword() {
   const msgEl = document.getElementById('settings-pwd-msg');
   if (newPwd.length < 6) { msgEl.style.color = 'var(--negative)'; msgEl.textContent = '新密码至少6位'; return; }
   if (newPwd !== newPwd2) { msgEl.style.color = 'var(--negative)'; msgEl.textContent = '两次密码不一致'; return; }
-  const resp = await authFetch('/auth/change-password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({current: currentPwd, new: newPwd}) });
+  const resp = await authFetch(DASH_BASE + '/auth/change-password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({current: currentPwd, new: newPwd}) });
   if (!resp) return;
   if (resp.ok) {
     msgEl.style.color = 'var(--accent)'; msgEl.textContent = '密码修改成功';
@@ -879,7 +879,7 @@ async function changePassword() {
 async function loadSettingsStatus() {
   const el = document.getElementById('settings-status');
   try {
-    const resp = await authFetch('/api/status');
+    const resp = await authFetch(DASH_BASE + '/api/status');
     if (!resp) return;
     const d = await resp.json();
     const noticeEl = document.getElementById('settings-env-notice');
@@ -905,7 +905,7 @@ async function loadHostVault() {
   msg.textContent = '';
   msg.style.color = 'var(--text-dim)';
   try {
-    const resp = await authFetch('/api/host-vault');
+    const resp = await authFetch(DASH_BASE + '/api/host-vault');
     if (!resp) return;
     const d = await resp.json();
     input.value = d.value || '';
@@ -931,7 +931,7 @@ async function saveHostVault() {
   msg.textContent = '保存中…';
   msg.style.color = 'var(--text-dim)';
   try {
-    const resp = await authFetch('/api/host-vault', {
+    const resp = await authFetch(DASH_BASE + '/api/host-vault', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({value})
@@ -963,7 +963,7 @@ async function authFetch(url, options) {
 
 // ========================================
 
-const BASE = location.origin;
+const DASH_BASE = window.location.pathname.startsWith('/gale-dash/') ? '/gale-dash' : '';
 let allBuckets = [];
 let currentFilter = 'all';
 let currentSort = 'created';   // created | importance
@@ -1021,7 +1021,7 @@ document.getElementById('search-input').addEventListener('input', (e) => {
 
 async function loadBuckets() {
   try {
-    const res = await fetch(BASE + '/api/buckets');
+    const res = await fetch(DASH_BASE + '/api/buckets');
     const data = await res.json();
     if (!res.ok || !Array.isArray(data)) {
       throw new Error((data && data.error) ? data.error : `HTTP ${res.status}`);
@@ -1183,7 +1183,7 @@ function renderBuckets(buckets) {
 async function deleteBucket(id, name) {
   if (!confirm('确定删除记忆桶「' + (name || id) + '」？此操作不可撤销。')) return;
   try {
-    const res = await authFetch(BASE + '/api/forget/' + id, { method: 'DELETE' });
+    const res = await authFetch(DASH_BASE + '/api/forget/' + id, { method: 'DELETE' });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error((data && data.error) ? data.error : '删除失败');
     allBuckets = allBuckets.filter(function(b) { return b.id !== id; });
@@ -1219,7 +1219,7 @@ async function batchDelete() {
   var ok = 0, fail = 0;
   for (var i = 0; i < ids.length; i++) {
     try {
-      var res = await authFetch(BASE + '/api/forget/' + ids[i], { method: 'DELETE' });
+      var res = await authFetch(DASH_BASE + '/api/forget/' + ids[i], { method: 'DELETE' });
       var data = await res.json();
       if (res.ok && data.ok) { ok++; allBuckets = allBuckets.filter(function(b) { return b.id !== ids[i]; }); }
       else fail++;
@@ -1240,7 +1240,7 @@ async function saveEdit(id) {
   if (tagsEl) body.tags = tagsEl.value;
   if (contentEl) body.content = contentEl.value;
   try {
-    var res = await authFetch(BASE + '/api/edit/' + id, {
+    var res = await authFetch(DASH_BASE + '/api/edit/' + id, {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
     });
     var data = await res.json();
@@ -1254,7 +1254,7 @@ async function saveEdit(id) {
 
 async function searchBuckets(query) {
   try {
-    var res = await fetch(BASE + '/api/search?q=' + encodeURIComponent(query));
+    var res = await fetch(DASH_BASE + '/api/search?q=' + encodeURIComponent(query));
     var results = await res.json();
     renderBuckets(results);
   } catch (e) {
@@ -1269,7 +1269,7 @@ async function showDetail(id) {
   panel.classList.add('open');
 
   try {
-    var res = await fetch(BASE + '/api/bucket/' + id);
+    var res = await fetch(DASH_BASE + '/api/bucket/' + id);
     var b = await res.json();
     var meta = b.metadata || {};
     content.innerHTML =
@@ -1342,7 +1342,7 @@ document.addEventListener('keydown', function(e) {
 
 async function loadConfig() {
   try {
-    var res = await fetch(BASE + '/api/config');
+    var res = await fetch(DASH_BASE + '/api/config');
     var cfg = await res.json();
     document.getElementById('cfg-dehy-model').value = cfg.dehydration.model || '';
     document.getElementById('cfg-dehy-url').value = cfg.dehydration.base_url || '';
@@ -1381,7 +1381,7 @@ async function saveConfig(persist) {
 
   var status = document.getElementById('config-status');
   try {
-    var res = await fetch(BASE + '/api/config', {
+    var res = await fetch(DASH_BASE + '/api/config', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
@@ -1422,7 +1422,7 @@ async function startImport(file) {
   try {
     var qs = '/api/import/upload?preserve_raw=' + (preserveRaw ? '1' : '0');
     if (forceDomain) qs += '&domain=' + encodeURIComponent(forceDomain);
-    const res = await fetch(BASE + qs, { method: 'POST', body: fd });
+    const res = await fetch(DASH_BASE + qs, { method: 'POST', body: fd });
     const data = await res.json();
     if (data.error) { alert('导入失败: ' + data.error); return; }
     document.getElementById('import-progress').style.display = '';
@@ -1435,13 +1435,13 @@ let importPollTimer;
 async function pollImportStatus() {
   clearInterval(importPollTimer);
   try {
-    const res = await fetch(BASE + '/api/import/status');
+    const res = await fetch(DASH_BASE + '/api/import/status');
     const s = await res.json();
     updateImportUI(s);
     if (s.status === 'running') {
       importPollTimer = setInterval(async () => {
         try {
-          const r2 = await fetch(BASE + '/api/import/status');
+          const r2 = await fetch(DASH_BASE + '/api/import/status');
           updateImportUI(await r2.json());
         } catch(e) {}
       }, 2000);
@@ -1473,14 +1473,14 @@ function updateImportUI(s) {
 }
 
 async function pauseImport() {
-  try { await fetch(BASE + '/api/import/pause', { method: 'POST' }); } catch(e) {}
+  try { await fetch(DASH_BASE + '/api/import/pause', { method: 'POST' }); } catch(e) {}
 }
 
 async function loadImportResults() {
   const container = document.getElementById('import-results-list');
   container.innerHTML = '<div class="loading">加载中…</div>';
   try {
-    const res = await fetch(BASE + '/api/import/results?limit=30');
+    const res = await fetch(DASH_BASE + '/api/import/results?limit=30');
     const data = await res.json();
     if (!data.buckets || !data.buckets.length) {
       container.innerHTML = '<p style="color:var(--text-dim)">暂无记忆桶</p>';
@@ -1509,7 +1509,7 @@ async function detectPatterns() {
   const container = document.getElementById('import-patterns');
   container.innerHTML = '<div class="loading">检测中…</div>';
   try {
-    const res = await fetch(BASE + '/api/import/patterns');
+    const res = await fetch(DASH_BASE + '/api/import/patterns');
     const data = await res.json();
     if (!data.patterns || !data.patterns.length) { container.innerHTML = '<p style="color:var(--text-dim)">未检测到高频模式</p>'; return; }
     container.innerHTML = data.patterns.map(p => `
@@ -1531,7 +1531,7 @@ async function detectPatterns() {
 
 async function reviewAction(bid, action) {
   try {
-    await fetch(BASE + '/api/import/review', {
+    await fetch(DASH_BASE + '/api/import/review', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ decisions: [{ bucket_id: bid, action }] })
     });
@@ -1544,7 +1544,7 @@ async function reviewAction(bid, action) {
 async function batchReview(idsJson, action) {
   try {
     const ids = JSON.parse(idsJson);
-    await fetch(BASE + '/api/import/review', {
+    await fetch(DASH_BASE + '/api/import/review', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ decisions: ids.map(id => ({ bucket_id: id, action })) })
     });
