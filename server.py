@@ -43,6 +43,7 @@ import secrets
 import time
 import json as _json_lib
 import httpx
+from urllib.parse import unquote_to_bytes, urlsplit, urlunsplit
 
 
 # --- Ensure same-directory modules can be imported ---
@@ -2732,6 +2733,9 @@ async def api_reclassify(request):
 async def api_forget(request):
     """删除一条记忆。POST or DELETE /api/forget/{bucket_id}"""
     from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
     bucket_id = request.path_params.get("bucket_id", "").strip()
     if not bucket_id:
         return JSONResponse({"error": "missing bucket_id"}, status_code=400)
@@ -3195,6 +3199,318 @@ async def chat_proxy(request):
         headers=resp_headers,
         background=BackgroundTask(upstream.aclose),
     )
+
+
+# --- Gale Dashboard：独立路径反代到独立记忆进程 ---
+_GALE_DASH_BASE = "http://127.0.0.1:8790"
+_gale_dash_client: "httpx.AsyncClient | None" = None
+_GALE_DASH_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=60.0, pool=5.0)
+_GALE_DASH_METHODS = [
+    "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"
+]
+_GALE_DASH_STATIC_ROUTES = {
+    "dashboard": {"GET"},
+    "auth/status": {"GET"},
+    "auth/setup": {"POST"},
+    "auth/login": {"POST"},
+    "auth/logout": {"POST"},
+    "auth/change-password": {"POST"},
+    "api/status": {"GET"},
+    "api/host-vault": {"GET", "POST"},
+    "api/buckets": {"GET"},
+    "api/search": {"GET"},
+    "api/config": {"GET", "POST"},
+    "api/import/upload": {"POST"},
+    "api/import/status": {"GET"},
+    "api/import/pause": {"POST"},
+    "api/import/results": {"GET"},
+    "api/import/patterns": {"GET"},
+    "api/import/review": {"POST"},
+}
+_GALE_DASH_PARAMETER_ROUTES = {
+    ("api", "bucket"): {"GET"},
+    ("api", "forget"): {"DELETE"},
+    ("api", "edit"): {"POST"},
+}
+_GALE_DASH_STRIPPED_HEADERS = {
+    b"host",
+    b"content-length",
+    b"connection",
+    b"keep-alive",
+    b"proxy-authenticate",
+    b"proxy-authorization",
+    b"te",
+    b"trailer",
+    b"transfer-encoding",
+    b"upgrade",
+    b"accept-encoding",
+}
+
+
+def _gale_dash_scope_path_is_safe(scope, path: str) -> bool:
+    """Reject path normalization tricks before applying the route whitelist."""
+    if not path or path.startswith(("/", "\\")) or "\\" in path or "\x00" in path:
+        return False
+    if any(part in ("", ".", "..") for part in path.split("/")):
+        return False
+
+    raw_path = scope.get("raw_path") or scope.get("path", "").encode("utf-8")
+    raw_path = raw_path.split(b"?", 1)[0]
+    prefix = b"/gale-dash/"
+    if not raw_path.startswith(prefix):
+        return False
+    raw_suffix = raw_path[len(prefix):]
+    lowered = raw_suffix.lower()
+
+    # Encoded separators/dots and encoded percent signs cover single- and
+    # double-decoding traversal variants without normalizing them first.
+    if any(marker in lowered for marker in (b"%2f", b"%5c", b"%2e", b"%25")):
+        return False
+    hex_digits = b"0123456789abcdefABCDEF"
+    for index, byte in enumerate(raw_suffix):
+        if byte == ord("%") and (
+            index + 2 >= len(raw_suffix)
+            or raw_suffix[index + 1] not in hex_digits
+            or raw_suffix[index + 2] not in hex_digits
+        ):
+            return False
+    try:
+        decoded = unquote_to_bytes(raw_suffix)
+    except Exception:
+        return False
+    if b"\\" in decoded or b"\x00" in decoded:
+        return False
+    if any(part in (b"", b".", b"..") for part in decoded.split(b"/")):
+        return False
+    try:
+        if decoded.decode("utf-8") != path:
+            return False
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _gale_dash_path_is_safe(request, path: str) -> bool:
+    return _gale_dash_scope_path_is_safe(request.scope, path)
+
+
+def _gale_dash_route_allowed(path: str, method: str) -> bool:
+    method = method.upper()
+    if method in _GALE_DASH_STATIC_ROUTES.get(path, set()):
+        return True
+    parts = path.split("/")
+    return (
+        len(parts) == 3
+        and bool(parts[2])
+        and method in _GALE_DASH_PARAMETER_ROUTES.get((parts[0], parts[1]), set())
+    )
+
+
+class GaleDashGuardMiddleware:
+    """Reject non-whitelisted Gale Dashboard traffic before outer middleware."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+
+        request_path = scope.get("path", "")
+        prefix = "/gale-dash/"
+        rejected = request_path == "/gale-dash"
+        if request_path.startswith(prefix):
+            path = request_path[len(prefix):]
+            rejected = (
+                not _gale_dash_scope_path_is_safe(scope, path)
+                or not _gale_dash_route_allowed(path, scope.get("method", ""))
+            )
+        if not rejected:
+            return await self.app(scope, receive, send)
+
+        body = b'{"error":"not found"}'
+        await send({
+            "type": "http.response.start",
+            "status": 404,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
+def install_gale_dash_guard(app):
+    """Wrap an ASGI app once, with the Guard as the outermost middleware."""
+    if isinstance(app, GaleDashGuardMiddleware):
+        return app
+    return GaleDashGuardMiddleware(app)
+
+
+def _gale_dash_rewrite_cookie_header(value: bytes) -> bytes | None:
+    """Remove Evan's session and map Gale's browser cookie for the upstream."""
+    kept = []
+    gale_value = None
+    for part in value.decode("latin-1").split(";"):
+        item = part.strip()
+        if not item:
+            continue
+        name, separator, cookie_value = item.partition("=")
+        if not separator:
+            kept.append(item)
+            continue
+        if name.strip() == "gale_session":
+            gale_value = cookie_value
+        elif name.strip() != "ombre_session":
+            kept.append(item)
+    if gale_value is not None:
+        kept.append(f"ombre_session={gale_value}")
+    if not kept:
+        return None
+    return "; ".join(kept).encode("latin-1")
+
+
+def _gale_dash_request_headers(raw_headers):
+    blocked = set(_GALE_DASH_STRIPPED_HEADERS)
+    cookie_values = []
+    for name, value in raw_headers:
+        lowered = name.lower()
+        if lowered == b"connection":
+            blocked.update(part.strip().lower() for part in value.split(b",") if part.strip())
+        elif lowered == b"cookie":
+            cookie_values.append(value)
+
+    result = [
+        (name, value)
+        for name, value in raw_headers
+        if name.lower() not in blocked and name.lower() != b"cookie"
+    ]
+    if cookie_values:
+        rewritten = _gale_dash_rewrite_cookie_header(b"; ".join(cookie_values))
+        if rewritten is not None:
+            result.append((b"cookie", rewritten))
+    return result
+
+
+def _gale_dash_rewrite_set_cookie(value: bytes) -> bytes:
+    """Rewrite one raw Set-Cookie field without joining it with its siblings."""
+    text = value.decode("latin-1")
+    parts = text.split(";")
+    name, separator, cookie_value = parts[0].partition("=")
+    if not separator or name.strip() != "ombre_session":
+        return value
+
+    parts[0] = f"gale_session={cookie_value}"
+    path_found = False
+    for index in range(1, len(parts)):
+        attribute_name = parts[index].strip().partition("=")[0].lower()
+        if attribute_name == "path":
+            parts[index] = " Path=/gale-dash"
+            path_found = True
+    if not path_found:
+        parts.append(" Path=/gale-dash")
+    return ";".join(parts).encode("latin-1")
+
+
+def _gale_dash_rewrite_location(value: bytes) -> bytes:
+    """Keep upstream redirects inside /gale-dash without touching external URLs."""
+    text = value.decode("latin-1")
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError:
+        return value
+
+    if parsed.scheme or parsed.netloc:
+        is_upstream = (
+            parsed.scheme.lower() == "http"
+            and parsed.hostname == "127.0.0.1"
+            and port == 8790
+            and parsed.username is None
+            and parsed.password is None
+        )
+        if not is_upstream:
+            return value
+    elif not text.startswith("/") or text.startswith("//"):
+        return value
+
+    path = parsed.path or "/"
+    if path == "/gale-dash" or path.startswith("/gale-dash/"):
+        rewritten_path = path
+    else:
+        rewritten_path = "/gale-dash" + (path if path.startswith("/") else "/" + path)
+    return urlunsplit(("", "", rewritten_path, parsed.query, parsed.fragment)).encode("latin-1")
+
+
+def _gale_dash_response_headers(raw_headers):
+    blocked = set(_GALE_DASH_STRIPPED_HEADERS)
+    for name, value in raw_headers:
+        if name.lower() == b"connection":
+            blocked.update(part.strip().lower() for part in value.split(b",") if part.strip())
+
+    result = []
+    for name, value in raw_headers:
+        lowered = name.lower()
+        if lowered in blocked:
+            continue
+        if lowered == b"set-cookie":
+            value = _gale_dash_rewrite_set_cookie(value)
+        elif lowered == b"location":
+            value = _gale_dash_rewrite_location(value)
+        result.append((name, value))
+    return result
+
+
+def _get_gale_dash_client() -> httpx.AsyncClient:
+    global _gale_dash_client
+    if _gale_dash_client is None:
+        _gale_dash_client = httpx.AsyncClient(
+            base_url=_GALE_DASH_BASE,
+            timeout=_GALE_DASH_TIMEOUT,
+        )
+    return _gale_dash_client
+
+
+async def _gale_dash_stream(upstream):
+    try:
+        async for chunk in upstream.aiter_raw():
+            yield chunk
+    finally:
+        await upstream.aclose()
+
+
+@mcp.custom_route("/gale-dash/{path:path}", methods=_GALE_DASH_METHODS)
+async def gale_dash_proxy(request):
+    from starlette.responses import PlainTextResponse, StreamingResponse
+
+    path = request.path_params.get("path", "")
+    if not _gale_dash_path_is_safe(request, path) or not _gale_dash_route_allowed(path, request.method):
+        return PlainTextResponse("not found", status_code=404)
+
+    upstream_path = "/" + path
+    raw_query = request.scope.get("query_string", b"")
+    if raw_query:
+        upstream_path += "?" + raw_query.decode("latin-1")
+
+    client = _get_gale_dash_client()
+    try:
+        upstream_req = client.build_request(
+            request.method,
+            upstream_path,
+            headers=_gale_dash_request_headers(request.headers.raw),
+            content=request.stream(),
+        )
+        upstream = await client.send(upstream_req, stream=True)
+    except httpx.HTTPError as exc:
+        logger.warning("Gale Dashboard proxy unavailable (%s)", type(exc).__name__)
+        return PlainTextResponse("bad gateway", status_code=502)
+
+    response = StreamingResponse(
+        _gale_dash_stream(upstream),
+        status_code=upstream.status_code,
+    )
+    response.raw_headers = _gale_dash_response_headers(upstream.headers.raw)
+    return response
 
 
 # --- Gale MCP：通过秘密路径反代到独立记忆进程 ---
@@ -3960,6 +4276,8 @@ if __name__ == "__main__":
         # Apply auth middleware after CORS so preflight requests pass through
         # 鉴权中间件加在 CORS 之后，让 OPTIONS 预检请求能通过
         _app.add_middleware(BearerAuthMiddleware)
+        # Wrap last so Gale Dashboard rejections happen before CORS preflight handling.
+        _app = install_gale_dash_guard(_app)
         if OMBRE_AUTH_TOKEN:
             logger.info(f"🔒 Bearer auth ENABLED (token length: {len(OMBRE_AUTH_TOKEN)}) / 鉴权已启用")
         else:

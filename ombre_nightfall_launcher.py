@@ -23,6 +23,7 @@ def main() -> None:
     def run_uvicorn(app, host="0.0.0.0", port=8000, **kwargs):
         del host
         kwargs.pop("access_log", None)
+        app = ombre_server.install_gale_dash_guard(app)
         return upstream_uvicorn_run(
             app,
             host=os.environ.get("OMBRE_HOST", "0.0.0.0"),
