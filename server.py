@@ -3877,6 +3877,6 @@ if __name__ == "__main__":
         else:
             logger.warning("⚠️  Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
 
-        uvicorn.run(_app, host="0.0.0.0", port=OMBRE_PORT)
+        uvicorn.run(_app, host=os.environ.get("OMBRE_HOST", "0.0.0.0"), port=OMBRE_PORT)
     else:
         mcp.run(transport=transport)
