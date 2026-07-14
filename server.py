@@ -3226,6 +3226,8 @@ _GALE_DASH_STATIC_ROUTES = {
     "api/import/results": {"GET"},
     "api/import/patterns": {"GET"},
     "api/import/review": {"POST"},
+    "api/recall": {"POST"},
+    "api/remember": {"POST"},
 }
 _GALE_DASH_PARAMETER_ROUTES = {
     ("api", "bucket"): {"GET"},
