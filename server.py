@@ -764,6 +764,7 @@ async def api_remember(request):
     domain = None
     if isinstance(domain_raw, str) and domain_raw.strip():
         domain = [d.strip() for d in domain_raw.split(",") if d.strip()]
+    pinned = bool(body.get("pinned", False))
     try:
         bucket_id = await bucket_mgr.create(
             content=content,
@@ -772,6 +773,7 @@ async def api_remember(request):
             domain=domain,
             valence=valence,
             arousal=arousal,
+            pinned=pinned,
         )
         # 后台跑 embedding（如果配置了的话），不阻塞返回
         try:
