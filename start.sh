@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# 同容器三进程：ChatNest（127.0.0.1:8787，只对内）+ Ombre/Night-Fall（8000，对外）+ Gale（127.0.0.1:8790，只对内）。
+# 同容器三进程：
+#   ChatNest（127.0.0.1:8787，只对内）
+# + Evan Ombre/Night-Fall（8000，对外，做梦 19 UTC = 3am 北京）
+# + Gale Ombre/Night-Fall（127.0.0.1:8790，只对内，做梦 21 UTC = 5am 北京）
 # 任何一个进程退出都放倒整个容器，让 Fly 重启——比留半条命好排查。
 set -euo pipefail
 
@@ -14,7 +17,7 @@ CHAT_PID=$!
 python /app/ombre_nightfall_launcher.py &
 OMBRE_PID=$!
 
-echo "[start] launching Gale memory process on localhost:8790"
+echo "[start] launching Gale memory process on localhost:8790 (with Night-Fall @ 21 UTC / 5am 北京)"
 OMBRE_BUCKETS_DIR=/app/buckets/gale \
 OMBRE_PORT=8790 \
 OMBRE_HOST=127.0.0.1 \
@@ -23,8 +26,9 @@ GALE_MCP_SLUG="" \
 GIST_TOKEN="" \
 STATE_GIST_URL="" \
 EVAN_SEND_SECRET="" \
+NIGHT_FALL_AUTO_HOUR_UTC=21 \
 AI_NAME=Gale \
-python /app/server.py &
+python /app/ombre_nightfall_launcher.py &
 GALE_PID=$!
 
 cleanup() {
