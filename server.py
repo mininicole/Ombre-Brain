@@ -3588,6 +3588,48 @@ async def gale_mcp_proxy(request):
     return response
 
 
+# --- Gale REST API 反代：给 gale-bot 这类无头脚本用（走同一 slug，不同前缀）---
+# /g-<slug>/api/recall + /api/remember → 127.0.0.1:8790 的对应 endpoint。
+# 白名单只放 recall/remember，其他一律 404——不给任何"顺手扫别的 endpoint"的机会。
+# 与 gale_mcp_proxy 复用同一 httpx client（同 base_url 8790）+ 同一 header 清洗。
+# CF Access 只罩 /gale-dash/*，本前缀 /g-<slug>/* 免过 SSO，无头脚本可直连。
+_GALE_API_ALLOWED = {"recall", "remember"}
+
+
+async def gale_api_proxy(request):
+    from starlette.background import BackgroundTask
+    from starlette.responses import PlainTextResponse, StreamingResponse
+
+    endpoint = request.path_params.get("endpoint", "")
+    if endpoint not in _GALE_API_ALLOWED:
+        return PlainTextResponse("not found", status_code=404)
+
+    upstream_path = f"/api/{endpoint}"
+    if request.url.query:
+        upstream_path += "?" + request.url.query
+
+    client = _get_gale_mcp_client()
+    try:
+        upstream_req = client.build_request(
+            request.method,
+            upstream_path,
+            headers=_gale_mcp_headers(request.headers.raw),
+            content=request.stream(),
+        )
+        upstream = await client.send(upstream_req, stream=True)
+    except httpx.HTTPError as exc:
+        logger.warning("Gale API proxy unavailable (%s)", type(exc).__name__)
+        return PlainTextResponse("bad gateway", status_code=502)
+
+    response = StreamingResponse(
+        upstream.aiter_raw(),
+        status_code=upstream.status_code,
+        background=BackgroundTask(upstream.aclose),
+    )
+    response.raw_headers = _gale_mcp_headers(upstream.headers.raw)
+    return response
+
+
 if _GALE_MCP_SLUG:
     if len(_GALE_MCP_SLUG) != 32 or not all(
         char.isascii() and (char.isalnum() or char in "-_")
@@ -3602,7 +3644,11 @@ if _GALE_MCP_SLUG:
         f"/g-{_GALE_MCP_SLUG}/mcp/{{path:path}}",
         methods=["GET", "POST", "DELETE"],
     )(gale_mcp_proxy)
-    logger.info("Gale MCP proxy routes enabled")
+    mcp.custom_route(
+        f"/g-{_GALE_MCP_SLUG}/api/{{endpoint:str}}",
+        methods=["GET", "POST"],
+    )(gale_api_proxy)
+    logger.info("Gale MCP + API proxy routes enabled")
 
 
 # --- 碎碎念：Evan 的主动消息记录 + 当前 bio（来自 evan-bot 的 state gist）---
