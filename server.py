@@ -3588,6 +3588,31 @@ async def gale_mcp_proxy(request):
     return response
 
 
+# --- Gale 做梦中继：给外部闹钟（GHA nightfall-wake）用 ---
+# 与 Evan 的 /api/night_fall/generate 同等安全姿态（公开无鉴权，代价是
+# 一次 DeepSeek 调用几分钱）。机器 suspend 时 Gale 进程内的 21 UTC 闹钟
+# 会睡死——跟 Evan 当年一模一样的坑，同样用外部 cron 唤醒+触发来治。
+@mcp.custom_route("/api/night_fall/generate_gale", methods=["POST"])
+async def api_generate_gale_dream(request):
+    from starlette.responses import JSONResponse
+    try:
+        client = _get_gale_mcp_client()
+        upstream = await client.post(
+            "/api/night_fall/generate",
+            content=await request.body(),
+            headers={"Content-Type": "application/json"},
+            timeout=httpx.Timeout(connect=5.0, read=300.0, write=30.0, pool=5.0),
+        )
+        try:
+            payload = upstream.json()
+        except Exception:
+            payload = {"raw": upstream.text[:500]}
+        return JSONResponse(payload, status_code=upstream.status_code)
+    except httpx.HTTPError as exc:
+        logger.warning("Gale dream relay failed (%s)", type(exc).__name__)
+        return JSONResponse({"error": "gale dream relay failed"}, status_code=502)
+
+
 # --- Gale REST API 反代：给 gale-bot 这类无头脚本用（走同一 slug，不同前缀）---
 # /g-<slug>/api/recall + /api/remember → 127.0.0.1:8790 的对应 endpoint。
 # 白名单只放 recall/remember，其他一律 404——不给任何"顺手扫别的 endpoint"的机会。

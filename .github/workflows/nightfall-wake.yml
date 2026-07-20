@@ -6,9 +6,12 @@ name: Night-Fall Wake & Dream
 # ② 请求本身就是做梦指令，直接触发 Night-Fall generate。
 # 不依赖内部循环。接口 /api/night_fall/generate 目前公开无鉴权。
 
+# 2026-07-19 起两口井都做梦：19 UTC Evan（北京 3 点）、21 UTC Gale（北京 5 点）。
+# 按当前小时挑端点；手动 workflow_dispatch 时两口井都做一遍（方便测试）。
 on:
   schedule:
     - cron: '0 19 * * *'
+    - cron: '0 21 * * *'
   workflow_dispatch:
 
 jobs:
@@ -25,20 +28,39 @@ jobs:
 
       - name: Trigger dream
         # 做梦本身可能要几十秒（要调模型），给足超时；失败重试两次。
+        # 19 UTC → Evan；21 UTC → Gale；手动触发 → 两个都做。
         run: |
-          for i in 1 2 3; do
-            echo "尝试做梦 (第 $i 次)..."
-            code=$(curl -s -m 300 -o /tmp/dream.json -w "%{http_code}" \
-              -X POST https://ombre.mininicole.com/api/night_fall/generate)
-            echo "HTTP $code"
-            cat /tmp/dream.json 2>/dev/null || true
-            echo
-            if [ "$code" = "200" ]; then
-              echo "做梦成功。"
-              exit 0
+          HOUR=$(date -u +%H)
+          echo "当前 UTC 小时: $HOUR (event: ${{ github.event_name }})"
+          ENDPOINTS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENDPOINTS="generate generate_gale"
+          elif [ "$HOUR" = "21" ]; then
+            ENDPOINTS="generate_gale"
+          else
+            ENDPOINTS="generate"
+          fi
+          overall=0
+          for ep in $ENDPOINTS; do
+            ok=0
+            for i in 1 2 3; do
+              echo "[$ep] 尝试做梦 (第 $i 次)..."
+              code=$(curl -s -m 300 -o /tmp/dream.json -w "%{http_code}" \
+                -X POST "https://ombre.mininicole.com/api/night_fall/$ep")
+              echo "[$ep] HTTP $code"
+              cat /tmp/dream.json 2>/dev/null || true
+              echo
+              if [ "$code" = "200" ]; then
+                echo "[$ep] 做梦成功。"
+                ok=1
+                break
+              fi
+              echo "[$ep] 非 200，等 15s 重试..."
+              sleep 15
+            done
+            if [ "$ok" = "0" ]; then
+              echo "[$ep] 三次都没成功——这口井今晚的梦可能漏了。"
+              overall=1
             fi
-            echo "非 200，等 15s 重试..."
-            sleep 15
           done
-          echo "三次都没成功——今晚的梦可能漏了，看日志排查。"
-          exit 1
+          exit $overall
