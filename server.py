@@ -3559,6 +3559,23 @@ async def gale_mcp_proxy(request):
     from starlette.background import BackgroundTask
     from starlette.responses import PlainTextResponse, StreamingResponse
 
+    # --- Debug 2026-07-21: MCP session 复用排查 ---
+    # 抓请求头里 session/conversation 标识 + 出去记 8790 返回的 session ID，
+    # 两侧对照分清"客户端没带 vs. 服务端不识别 vs. 值被替换"。
+    # Authorization 只记 present/absent；session/conversation ID 只留 sha256 前 8 位。
+    _dbg_req = {}
+    _has_auth = False
+    for name, value in request.headers.raw:
+        n = name.lower()
+        if n in (b'mcp-session-id', b'x-conversation-id', b'x-openai-thread-id',
+                 b'x-openai-conversation-id', b'x-request-id'):
+            _dbg_req[n.decode()] = hashlib.sha256(value).hexdigest()[:8]
+        elif n == b'authorization':
+            _has_auth = True
+    _dbg_req['authorization'] = 'present' if _has_auth else 'absent'
+    logger.info("gale_mcp_proxy REQ %s %s headers=%s",
+                request.method, request.url.path, _dbg_req)
+
     upstream_path = "/mcp"
     path = request.path_params.get("path", "")
     if path:
@@ -3578,6 +3595,12 @@ async def gale_mcp_proxy(request):
     except httpx.HTTPError as exc:
         logger.warning("Gale MCP proxy unavailable (%s)", type(exc).__name__)
         return PlainTextResponse("bad gateway", status_code=502)
+
+    # --- Debug: 8790 返回的 session ID sha256 前 8 位 ---
+    _resp_sid = upstream.headers.get('mcp-session-id')
+    _resp_sid_tag = hashlib.sha256(_resp_sid.encode()).hexdigest()[:8] if _resp_sid else 'none'
+    logger.info("gale_mcp_proxy RESP status=%d resp-sid=%s",
+                upstream.status_code, _resp_sid_tag)
 
     response = StreamingResponse(
         upstream.aiter_raw(),
