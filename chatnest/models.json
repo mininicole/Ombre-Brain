@@ -1,8 +1,10 @@
 [
-  { "id": "claude-fable-5",              "label": "Fable 5",       "desc": "趁它还在（7 号前）",                 "thinking": "adaptive", "primary": true  },
-  { "id": "claude-opus-4-7",             "label": "Opus 4.7",      "desc": "Fable 走后的首选",                   "thinking": "adaptive", "primary": true  },
+  { "id": "claude-opus-5",               "label": "Opus 5",        "desc": "最新一代，日常首选",                 "thinking": "adaptive", "primary": true  },
+  { "id": "claude-fable-5",              "label": "Fable 5",       "desc": "最能扛的，硬骨头交给它",             "thinking": "adaptive", "primary": true  },
   { "id": "claude-opus-4-6",             "label": "Opus 4.6",      "desc": "Telegram Evan 同款",                 "thinking": "extended", "primary": true  },
-  { "id": "claude-opus-4-8",             "label": "Opus 4.8",      "desc": "For complex tasks",                 "thinking": "adaptive", "primary": true  },
+  { "id": "claude-opus-4-8",             "label": "Opus 4.8",      "desc": "上一代 Opus",                       "thinking": "adaptive", "primary": true  },
+  { "id": "claude-sonnet-5",             "label": "Sonnet 5",      "desc": "快且够聪明，日常任务",               "thinking": "adaptive", "primary": true  },
+  { "id": "claude-opus-4-7",             "label": "Opus 4.7",      "desc": "更早一代 Opus",                     "thinking": "adaptive", "primary": true  },
   { "id": "claude-sonnet-4-6",           "label": "Sonnet 4.6",    "desc": "Most efficient for everyday tasks", "thinking": "adaptive", "primary": true  },
   { "id": "claude-haiku-4-5",             "label": "Haiku 4.5",     "desc": "Fastest for quick answers",         "thinking": "extended", "primary": true  },
   { "id": "codex",                       "label": "Codex",         "desc": "OpenAI coding agent",               "thinking": "none",     "primary": true  },
