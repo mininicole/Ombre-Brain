@@ -188,7 +188,7 @@ async def stream_chat(
     message: str,
     conv_id: str,
     session_id: str | None = None,
-    model: str = "claude-sonnet-4-6",
+    model: str = "claude-opus-5",
     effort: str = "medium",
     extended: bool = True,
     timing_callback: Callable[[str], None] | None = None,

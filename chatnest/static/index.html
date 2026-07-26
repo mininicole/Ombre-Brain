@@ -437,7 +437,7 @@ const state={
   token:localStorage.getItem('chat_token'),
   convId:localStorage.getItem('chat_conversation'),
   legacySessionId:localStorage.getItem('chat_session'),
-  model:localStorage.getItem('chat_model')||'claude-sonnet-4-6',
+  model:localStorage.getItem('chat_model')||'claude-opus-5',
   settings:JSON.parse(localStorage.getItem('chat_model_settings')||'{}'),
   models:[],busy:false,currentTitle:'新对话',starred:false,pendingFiles:[],menuSession:null
 };
@@ -507,7 +507,7 @@ async function greeting(){try{const r=await fetch('api/splash');if(r.ok)return(a
 async function resetEmpty(){state.convId=null;state.legacySessionId=null;state.currentTitle='新对话';state.starred=false;localStorage.removeItem('chat_conversation');localStorage.removeItem('chat_session');streamInner.innerHTML=`<div class="empty" id="empty">${logo('mark-35')}<div class="empty-line"></div></div>`;$('empty').querySelector('.empty-line').textContent=await greeting();input.placeholder='和助手聊天';updateSessionHeader()}
 async function dismissEmpty(){input.placeholder='回复助手';const el=$('empty');if(!el)return;el.classList.add('leaving');await new Promise(r=>setTimeout(r,300));el.remove()}
 
-async function loadModels(){try{const r=await fetch('api/models');state.models=(await r.json()).models}catch{state.models=[{id:'claude-sonnet-4-6',label:'Sonnet 4.6',desc:'Everyday tasks',thinking:'adaptive',primary:true}]}
+async function loadModels(){try{const r=await fetch('api/models');state.models=(await r.json()).models}catch{state.models=[{id:'claude-opus-5',label:'Opus 5',desc:'最新一代，日常首选',thinking:'adaptive',primary:true}]}
   if(!state.models.some(x=>x.id===state.model))state.model=state.models[0].id;renderModelSheet();updateModelHeader()}
 function modelSettingText(model=currentModel(),s=modelSetting(model)){if(!model||model.thinking==='none')return'';return(s.effort||'medium').replace(/^./,c=>c.toUpperCase())}
 function updateModelHeader(){const m=currentModel(),setting=modelSettingText(m);$('topbarModelText').textContent=m?.label||state.model;$('topbarModelSetting').textContent=setting;if($('modelCapsuleText'))$('modelCapsuleText').textContent=`${m?.label||state.model}${setting?' '+setting:''}`}

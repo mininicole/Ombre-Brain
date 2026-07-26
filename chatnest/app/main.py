@@ -201,7 +201,7 @@ class ChatBody(BaseModel):
     session_id: str | None = Field(default=None, max_length=256)
     edit_message_id: int | None = Field(default=None, ge=1)
     retry_message_id: int | None = Field(default=None, ge=1)
-    model: str = Field(default="claude-sonnet-4-6", max_length=64)
+    model: str = Field(default="claude-opus-5", max_length=64)
     effort: str = Field(default="medium", max_length=16)
     extended: bool = True
     attachments: list[str] = Field(default_factory=list, max_length=10)
