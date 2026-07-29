@@ -723,7 +723,7 @@ class BucketManager:
 
     @staticmethod
     def _has_exact_topic_match(query: str, bucket: dict) -> bool:
-        """Return True when a meaningful name/tag occurs literally in the query."""
+        """Return True when a meaningful recall topic occurs literally in a bucket."""
 
         def compact(value) -> str:
             return re.sub(r"[\W_]+", "", str(value or "").casefold())
@@ -738,14 +738,46 @@ class BucketManager:
         if isinstance(tags, str):
             tags = [tags]
         fields.extend(tags)
+        compact_fields = [compact(field) for field in fields]
 
-        for field in fields:
-            field_text = compact(field)
+        # First preserve literal whole-name/tag matching in either direction.
+        for field_text in compact_fields:
             if len(field_text) < 2:
                 continue
             if field_text in query_text or query_text in field_text:
                 return True
-        return False
+
+        # Natural recall questions wrap the actual topic in phrases such as
+        # "你还记得…吗". Strip only those edge cues, then allow the remaining
+        # topic to match the bucket body as well. This covers older buckets whose
+        # useful keywords live in structured content rather than metadata tags.
+        topic_text = query_text
+        recall_prefixes = (
+            "你还记得",
+            "还记得",
+            "你记得",
+            "记不记得",
+            "记得",
+            "doyouremember",
+            "remember",
+        )
+        recall_suffixes = ("吗", "嘛", "么", "吧")
+        for prefix in recall_prefixes:
+            if topic_text.startswith(prefix):
+                topic_text = topic_text[len(prefix):]
+                break
+        while topic_text and topic_text[-1] in recall_suffixes:
+            topic_text = topic_text[:-1]
+
+        if len(topic_text) < 2:
+            return False
+
+        content_text = compact(bucket.get("content", "")[:1000])
+        return any(
+            topic_text in field_text
+            for field_text in [*compact_fields, content_text]
+            if field_text
+        )
 
     # ---------------------------------------------------------
     # Emotion resonance sub-score:

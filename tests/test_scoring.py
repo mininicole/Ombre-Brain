@@ -282,8 +282,11 @@ class TestSearchScoring:
     async def test_exact_tag_match_bypasses_blended_threshold(self, bucket_mgr):
         """Recall wrappers must not bury an exact memory keyword below threshold."""
         target_id = await bucket_mgr.create(
-            content="Gale被深深比喻为太乙真人。",
-            tags=["太乙真人", "比喻"],
+            content=(
+                '{"keywords":["太乙真人","比喻"],'
+                '"summary":"Gale被深深比喻为太乙真人。"}'
+            ),
+            tags=["电影", "搞笑", "日常"],
             importance=1,
             domain=["tg-gale"],
             name="太乙真人平替风波",
