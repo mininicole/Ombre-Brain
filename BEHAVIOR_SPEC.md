@@ -181,6 +181,7 @@ breath(query="实习", domain="成长", valence=0.7, arousal=0.5)
 4. **关键词检索**：`bucket_mgr.search(query, limit=20, domain_filter, q_valence, q_arousal)`
    - **Layer 1**：domain 预筛 → 仅保留 domain 包含"成长"的桶；若为空则回退全量
    - 关键词候选集不会被 embedding top-k 预筛裁掉；名称/标签精确命中的桶始终参加精排
+   - 问句中若字面包含完整桶名或标签（至少 2 字符），视为强关键词命中，不受综合分阈值压制
    - **Layer 2**：多维加权精排：
      - `_calc_topic_score()`: `fuzz.partial_ratio(query, name)×3 + domain×2.5 + tags×2 + body×1`，归一化 0~1
      - `_calc_emotion_score()`: `1 - √((v差²+a差²)/2)`，0~1

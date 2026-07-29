@@ -279,6 +279,28 @@ class TestSearchScoring:
         mock_embedding_engine.search_similar.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_exact_tag_match_bypasses_blended_threshold(self, bucket_mgr):
+        """Recall wrappers must not bury an exact memory keyword below threshold."""
+        target_id = await bucket_mgr.create(
+            content="Gale被深深比喻为太乙真人。",
+            tags=["太乙真人", "比喻"],
+            importance=1,
+            domain=["tg-gale"],
+            name="太乙真人平替风波",
+        )
+        bucket_mgr.fuzzy_threshold = 95
+
+        results = await bucket_mgr.search(
+            "你还记得太乙真人吗？",
+            limit=10,
+            domain_filter=["tg-gale"],
+            strict_domain=True,
+        )
+
+        target = next(bucket for bucket in results if bucket["id"] == target_id)
+        assert target["score"] == 100.0
+
+    @pytest.mark.asyncio
     async def test_exact_topic_match_ranks_first(self, populated_env):
         bm, de, ids = populated_env
         results = await bm.search("asyncio Python event loop", limit=10)

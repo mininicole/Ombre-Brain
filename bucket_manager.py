@@ -28,6 +28,7 @@
 import os
 import math
 import logging
+import re
 import shutil
 import tempfile
 from datetime import datetime
@@ -661,11 +662,18 @@ class BucketManager:
                 # Normalize to 0~100 for readability
                 weight_sum = self.w_topic + self.w_emotion + self.w_time + self.w_importance
                 normalized = (total / weight_sum) * 100 if weight_sum > 0 else 0
+                exact_topic_match = self._has_exact_topic_match(query, bucket)
 
                 # Threshold check uses raw (pre-penalty) score so resolved buckets
                 # 阈值用原始分数判定，确保 resolved 桶在关键词命中时仍可被搜出
                 # remain reachable by keyword (penalty applied only to ranking).
-                if normalized >= self.fuzzy_threshold:
+                if normalized >= self.fuzzy_threshold or exact_topic_match:
+                    # A literal name/tag hit is stronger evidence than the blended
+                    # topic+emotion+time score. Conversational wrappers such as
+                    # "你还记得…吗" must not make an exact memory keyword miss the
+                    # global threshold just because the bucket is old.
+                    if exact_topic_match:
+                        normalized = max(normalized, 100.0)
                     # Resolved buckets get ranking penalty (but still reachable by keyword)
                     # 已解决的桶仅在排序时降权
                     if meta.get("resolved", False):
@@ -712,6 +720,32 @@ class BucketManager:
         content_score = fuzz.partial_ratio(query, bucket.get("content", "")[:1000]) * self.content_weight
 
         return (name_score + domain_score + tag_score + content_score) / (100 * (3 + 2.5 + 2 + self.content_weight))
+
+    @staticmethod
+    def _has_exact_topic_match(query: str, bucket: dict) -> bool:
+        """Return True when a meaningful name/tag occurs literally in the query."""
+
+        def compact(value) -> str:
+            return re.sub(r"[\W_]+", "", str(value or "").casefold())
+
+        query_text = compact(query)
+        if len(query_text) < 2:
+            return False
+
+        meta = bucket.get("metadata", {})
+        fields = [meta.get("name", "")]
+        tags = meta.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        fields.extend(tags)
+
+        for field in fields:
+            field_text = compact(field)
+            if len(field_text) < 2:
+                continue
+            if field_text in query_text or query_text in field_text:
+                return True
+        return False
 
     # ---------------------------------------------------------
     # Emotion resonance sub-score:
