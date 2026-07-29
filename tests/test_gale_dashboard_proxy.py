@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import time
 from types import SimpleNamespace
@@ -450,6 +451,119 @@ async def test_proxy_closes_upstream_when_response_iteration_is_cancelled(
     assert await anext(iterator) == b"first"
     await iterator.aclose()
     assert upstream.closed
+
+
+@pytest.mark.asyncio
+async def test_api_remember_forwards_explicit_domain(monkeypatch, server_module):
+    hold = AsyncMock(return_value="新建→wonderland-bucket tg-wonderland")
+    monkeypatch.setattr(server_module, "hold", hold)
+    request = make_request(
+        "POST",
+        "api/remember",
+        body=json.dumps({
+            "content": "Wonderland 群聊阶段总结",
+            "importance": 6,
+            "domain": "tg-wonderland",
+            "tags": "Wonderland,群聊总结",
+        }).encode("utf-8"),
+    )
+
+    response = await server_module.api_remember(request)
+
+    assert response.status_code == 200
+    hold.assert_awaited_once()
+    assert hold.await_args.kwargs["domain"] == "tg-wonderland"
+
+
+@pytest.mark.asyncio
+async def test_hold_explicit_domain_overrides_auto_classification(
+    monkeypatch, server_module
+):
+    monkeypatch.setattr(
+        server_module.decay_engine,
+        "ensure_started",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "analyze",
+        AsyncMock(return_value={
+            "domain": ["恋爱", "社交"],
+            "valence": 0.7,
+            "arousal": 0.5,
+            "tags": ["自动标签"],
+            "suggested_name": "群聊总结",
+        }),
+    )
+    monkeypatch.setattr(
+        server_module.bucket_mgr,
+        "search",
+        AsyncMock(return_value=[]),
+    )
+    create = AsyncMock(return_value="wonderland-bucket")
+    monkeypatch.setattr(server_module.bucket_mgr, "create", create)
+    monkeypatch.setattr(
+        server_module.embedding_engine,
+        "generate_and_store",
+        AsyncMock(return_value=None),
+    )
+
+    result = await server_module.hold(
+        content="Wonderland 群聊阶段总结",
+        domain="tg-wonderland",
+    )
+
+    assert result.startswith("新建→wonderland-bucket")
+    assert create.await_args.kwargs["domain"] == ["tg-wonderland"]
+
+
+@pytest.mark.asyncio
+async def test_breath_honors_max_results(monkeypatch, server_module):
+    matches = [
+        {
+            "id": f"wonderland-{index}",
+            "metadata": {"domain": ["tg-wonderland"]},
+            "content": f"Wonderland summary {index}",
+        }
+        for index in range(5)
+    ]
+    monkeypatch.setattr(
+        server_module.bucket_mgr,
+        "search",
+        AsyncMock(return_value=matches),
+    )
+    monkeypatch.setattr(
+        server_module.bucket_mgr,
+        "list_all",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        server_module.bucket_mgr,
+        "touch",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        server_module.embedding_engine,
+        "search_similar",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "dehydrate",
+        AsyncMock(side_effect=lambda content, _meta: content),
+    )
+
+    result = await server_module.breath(
+        query="Wonderland",
+        domain="tg-wonderland",
+        max_results=2,
+        max_tokens=5000,
+        include_recent=0,
+    )
+
+    assert "[bucket_id:wonderland-0]" in result
+    assert "[bucket_id:wonderland-1]" in result
+    assert "[bucket_id:wonderland-2]" not in result
 
 
 @pytest.mark.asyncio

@@ -1224,7 +1224,7 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
     results = []
     token_used = 0
     for bucket in matches:
-        if token_used >= max_tokens:
+        if len(results) >= max_results or token_used >= max_tokens:
             break
         try:
             clean_meta = {k: v for k, v in bucket["metadata"].items() if k != "tags"}
@@ -1344,10 +1344,12 @@ async def hold(
     importance: int = 5,
     pinned: bool = False,
     feel: bool = False,
-    source_bucket: str = "",    valence: float = -1,
+    source_bucket: str = "",
+    domain: str = "",
+    valence: float = -1,
     arousal: float = -1,
 ) -> str:
-    """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
+    """存储单条记忆,自动打标+合并。tags/domain逗号分隔,domain非空时覆盖自动主题。importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -1399,7 +1401,8 @@ async def hold(
             "tags": [], "suggested_name": "",
         }
 
-    domain = analysis["domain"]
+    requested_domains = [d.strip() for d in str(domain or "").split(",") if d.strip()]
+    domain = requested_domains or analysis["domain"]
     auto_valence = analysis["valence"]
     auto_arousal = analysis["arousal"]
     auto_tags = analysis["tags"]
@@ -2810,6 +2813,7 @@ async def api_remember(request):
             feel=bool(body.get("feel", False)),
             importance=int(body.get("importance") or 5),
             pinned=bool(body.get("pinned", False)),
+            domain=str(body.get("domain") or ""),
             valence=float(body.get("valence") if body.get("valence") is not None else -1),
             arousal=float(body.get("arousal") if body.get("arousal") is not None else -1),
             tags=str(body.get("tags") or ""),
