@@ -625,19 +625,10 @@ class BucketManager:
         else:
             candidates = all_buckets
 
-        # --- Layer 1.5: embedding pre-filter (optional, reduces multi-dim ranking set) ---
-        # --- 第1.5层：embedding 预筛（可选，缩小精排候选集）---
-        if self.embedding_engine and self.embedding_engine.enabled:
-            try:
-                vector_results = await self.embedding_engine.search_similar(query, top_k=50)
-                if vector_results:
-                    vector_ids = {bid for bid, _ in vector_results}
-                    emb_candidates = [b for b in candidates if b["id"] in vector_ids]
-                    if emb_candidates:  # only replace if there's non-empty overlap
-                        candidates = emb_candidates
-                    # else: keep original candidates as fallback
-            except Exception as e:
-                logger.warning(f"Embedding pre-filter failed, using fuzzy only / embedding 预筛失败: {e}")
+        # Keep every in-scope bucket in the lexical candidate set. Embedding search
+        # is an independent supplement in server.breath(); using its top-k output
+        # as a destructive pre-filter here can hide exact name/tag matches whenever
+        # a bucket has a stale/missing vector or falls just outside the vector top-k.
 
         # --- Layer 2: weighted multi-dim ranking ---
         # --- 第二层：多维加权精排 ---

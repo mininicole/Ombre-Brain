@@ -135,6 +135,8 @@ ALLOWED_ROUTES = [
     ("api/import/results", "GET"),
     ("api/import/patterns", "GET"),
     ("api/import/review", "POST"),
+    ("api/remember", "POST"),
+    ("api/recall", "POST"),
 ]
 
 
@@ -177,8 +179,6 @@ def test_wrong_method_is_not_allowed(server_module, path, method):
         "chat",
         "breath-hook",
         "dream-hook",
-        "api/remember",
-        "api/recall",
         "api/state",
         "api/poke",
         "api/bucket",
@@ -590,8 +590,6 @@ async def test_upstream_failure_returns_sanitized_502(monkeypatch, server_module
         ("chat", "GET"),
         ("breath-hook", "GET"),
         ("dream-hook", "GET"),
-        ("api/remember", "POST"),
-        ("api/recall", "POST"),
         ("dashboard", "POST"),
         ("api/status", "PATCH"),
         ("api/status", "OPTIONS"),

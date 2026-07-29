@@ -241,6 +241,44 @@ class TestSearchScoring:
     """Verify search scoring produces correct rankings."""
 
     @pytest.mark.asyncio
+    async def test_embedding_does_not_cull_exact_lexical_match(
+        self, bucket_mgr, mock_embedding_engine
+    ):
+        """Vector top-k must not remove a bucket that exactly matches a name/tag."""
+        target_id = await bucket_mgr.create(
+            content=(
+                "Gale被深深比喻为太乙真人，引发大笑和暧昧威胁，"
+                "要求深深投降。"
+            ),
+            tags=["太乙真人", "比喻", "投降"],
+            importance=7,
+            domain=["tg-gale"],
+            name="太乙真人平替风波",
+        )
+        distractor_id = await bucket_mgr.create(
+            content="布拉格旅行和天文钟。",
+            tags=["旅行"],
+            importance=7,
+            domain=["tg-gale"],
+            name="第一次旅行",
+        )
+        mock_embedding_engine.enabled = True
+        mock_embedding_engine.search_similar.return_value = [
+            (distractor_id, 0.99)
+        ]
+        bucket_mgr.embedding_engine = mock_embedding_engine
+
+        results = await bucket_mgr.search(
+            "你还记得太乙真人吗？",
+            limit=10,
+            domain_filter=["tg-gale"],
+            strict_domain=True,
+        )
+
+        assert target_id in {bucket["id"] for bucket in results}
+        mock_embedding_engine.search_similar.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_exact_topic_match_ranks_first(self, populated_env):
         bm, de, ids = populated_env
         results = await bm.search("asyncio Python event loop", limit=10)

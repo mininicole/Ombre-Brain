@@ -180,7 +180,7 @@ breath(query="实习", domain="成长", valence=0.7, arousal=0.5)
 3. 解析 `domain_filter = ["成长"]`，`q_valence=0.7`，`q_arousal=0.5`
 4. **关键词检索**：`bucket_mgr.search(query, limit=20, domain_filter, q_valence, q_arousal)`
    - **Layer 1**：domain 预筛 → 仅保留 domain 包含"成长"的桶；若为空则回退全量
-   - **Layer 1.5**（embedding 已开启时）：`embedding_engine.search_similar(query, top_k=50)` → 用 embedding 候选集替换/缩小精排范围
+   - 关键词候选集不会被 embedding top-k 预筛裁掉；名称/标签精确命中的桶始终参加精排
    - **Layer 2**：多维加权精排：
      - `_calc_topic_score()`: `fuzz.partial_ratio(query, name)×3 + domain×2.5 + tags×2 + body×1`，归一化 0~1
      - `_calc_emotion_score()`: `1 - √((v差²+a差²)/2)`，0~1
