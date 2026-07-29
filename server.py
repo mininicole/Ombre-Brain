@@ -2167,6 +2167,11 @@ async def api_buckets(request):
         result = []
         for b in all_buckets:
             meta = b.get("metadata", {})
+            # Soft-deleted buckets live under archive/ so they can be recovered,
+            # but they are no longer part of the Dashboard's visible memory set.
+            # Natural archive entries (without deleted_at) remain visible.
+            if meta.get("deleted_at"):
+                continue
             result.append({
                 "id": b["id"],
                 "name": meta.get("name", b["id"]),

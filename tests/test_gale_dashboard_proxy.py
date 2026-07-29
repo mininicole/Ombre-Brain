@@ -278,6 +278,51 @@ async def test_forget_allows_valid_session_and_runs_existing_delete(
     delete_embedding.assert_called_once_with("bucket-123")
 
 
+@pytest.mark.asyncio
+async def test_bucket_list_hides_soft_deleted_buckets_but_keeps_natural_archive(
+    monkeypatch, server_module
+):
+    token = "valid-dashboard-session"
+    server_module._sessions.clear()
+    server_module._sessions[token] = time.time() + 60
+    list_all = AsyncMock(
+        return_value=[
+            {
+                "id": "active",
+                "metadata": {"name": "Active", "type": "dynamic"},
+                "content": "active memory",
+            },
+            {
+                "id": "natural-archive",
+                "metadata": {"name": "Archive", "type": "archived"},
+                "content": "naturally archived memory",
+            },
+            {
+                "id": "soft-deleted",
+                "metadata": {
+                    "name": "Deleted",
+                    "type": "archived",
+                    "deleted_at": "2026-07-29T12:00:00+08:00",
+                },
+                "content": "deleted memory",
+            },
+        ]
+    )
+    monkeypatch.setattr(server_module.bucket_mgr, "list_all", list_all)
+    request = make_request(
+        "GET",
+        "api/buckets",
+        headers=[(b"cookie", f"ombre_session={token}".encode("ascii"))],
+    )
+
+    response = await server_module.api_buckets(request)
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    list_all.assert_awaited_once_with(include_archive=True)
+    assert [bucket["id"] for bucket in payload] == ["active", "natural-archive"]
+
+
 def test_multiple_set_cookie_headers_preserve_expires_and_logout(server_module):
     raw = [
         (
