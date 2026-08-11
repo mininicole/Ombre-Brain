@@ -664,11 +664,16 @@ async def breath_hook(request):
         scored = sorted(unresolved, key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
 
         parts = []
-        token_budget = 10000
+        token_budget = 3000
         for b in pinned:
             summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
-            parts.append(f"📌 [核心准则] {summary}")
-            token_budget -= count_tokens_approx(summary)
+            line = f"📌 [核心准则] {summary}"
+            line_tokens = count_tokens_approx(line)
+            if line_tokens > token_budget:
+                logger.warning(f"Breath hook pinned budget exhausted before {b['id']}")
+                continue
+            parts.append(line)
+            token_budget -= line_tokens
 
         # Diversity: top-1 fixed + shuffle rest from top-20
         candidates = list(scored)
@@ -677,8 +682,8 @@ async def breath_hook(request):
             pool = candidates[1:min(20, len(candidates))]
             random.shuffle(pool)
             candidates = top1 + pool + candidates[min(20, len(candidates)):]
-        # Hard cap: max 8 surfacing buckets in hook
-        candidates = candidates[:8]
+        # Hard cap: max 3 dynamic buckets in hook; all share the 3000-token budget.
+        candidates = candidates[:3]
 
         for b in candidates:
             if token_budget <= 0:
@@ -958,17 +963,17 @@ async def _merge_or_create(
 # 有参数：按关键词+情感坐标检索记忆
 # =============================================================
 @mcp.tool()
-async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（深深拍板）
+async def breath(  # 2026-08-11 默认闸门 5000/5 → 3000/3；所有浮现共享同一预算
     query: str = "",
-    max_tokens: int = 5000,
+    max_tokens: int = 3000,
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
-    max_results: int = 5,
+    max_results: int = 3,
     importance_min: int = -1,
     include_recent: int = 0,  # 2026-07-07：search 分支追加 N 条"最近未解决桶"（共享 max_tokens）
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制返回总token上限(默认5000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认5,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,在关键词/向量匹配之后再追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），共享 max_tokens 预算，token 总量不翻倍。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制包括钉桶在内的返回总token上限(默认3000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认3,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,在关键词/向量匹配之后再追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），共享 max_tokens 预算，token 总量不翻倍。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1036,11 +1041,18 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
             if b["metadata"].get("pinned") or b["metadata"].get("protected")
         ]
         pinned_results = []
+        pinned_token_used = 0
         for b in pinned_buckets:
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                pinned_results.append(f"📌 [核心准则] [bucket_id:{b['id']}] {summary}")
+                line = f"📌 [核心准则] [bucket_id:{b['id']}] {summary}"
+                line_tokens = count_tokens_approx(line)
+                if pinned_token_used + line_tokens > max_tokens:
+                    logger.warning(f"Breath pinned budget exhausted before {b['id']}")
+                    continue
+                pinned_results.append(line)
+                pinned_token_used += line_tokens
             except Exception as e:
                 logger.warning(f"Failed to dehydrate pinned bucket / 钉选桶脱水失败: {e}")
                 continue
@@ -1090,9 +1102,7 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
         # --- Token-budgeted surfacing with diversity + hard cap ---
         # --- 按 token 预算浮现，带多样性 + 硬上限 ---
         # Top-1 always surfaces; rest sampled from top-20 for diversity
-        token_budget = max_tokens
-        for r in pinned_results:
-            token_budget -= count_tokens_approx(r)
+        token_budget = max_tokens - pinned_token_used
 
         # Cold-start buckets stay at front; rest already sorted by recency.
         # 冷启动桶置顶，其余已按时间倒序排列，不再随机洗牌。
@@ -1107,13 +1117,14 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                summary_tokens = count_tokens_approx(summary)
-                if summary_tokens > token_budget:
+                score = decay_engine.calculate_score(b["metadata"])
+                line = f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}"
+                line_tokens = count_tokens_approx(line)
+                if line_tokens > token_budget:
                     break
                 # NOTE: no touch() here — surfacing should NOT reset decay timer
-                score = decay_engine.calculate_score(b["metadata"])
-                dynamic_results.append(f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}")
-                token_budget -= summary_tokens
+                dynamic_results.append(line)
+                token_budget -= line_tokens
             except Exception as e:
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
                 continue
@@ -1147,16 +1158,23 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
                     )
                     score = decay_engine.calculate_score(wave["metadata"])
                     wave_line = f"[权重:{score:.2f}] [bucket_id:{wave['id']}] {wave_summary}"
+                    wave_tokens = count_tokens_approx(wave_line)
+                    if wave_tokens > token_budget:
+                        logger.info(f"Brain wave skipped by token budget: {wave['id']}")
+                        wave_line = ""
                     # 随机插入位置，不要永远在末尾，让它看起来像自然冒出来的
-                    if dynamic_results:
+                    if wave_line and dynamic_results:
                         insert_at = random.randint(0, len(dynamic_results))
                         dynamic_results.insert(insert_at, wave_line)
-                    else:
+                        token_budget -= wave_tokens
+                    elif wave_line:
                         dynamic_results.append(wave_line)
-                    logger.info(
-                        f"Brain wave surfaced: {wave['id']} "
-                        f"({wave['metadata'].get('name', 'unnamed')})"
-                    )
+                        token_budget -= wave_tokens
+                    if wave_line:
+                        logger.info(
+                            f"Brain wave surfaced: {wave['id']} "
+                            f"({wave['metadata'].get('name', 'unnamed')})"
+                        )
             except Exception as e:
                 logger.warning(f"Brain wave failed / 念头浮现失败: {e}")
 
@@ -1213,8 +1231,9 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
     # 钉桶就再也出不来。这里独立加载并严格按 domain 隔离：
     # 调用方传 domain 时，钉桶 metadata.domain 必须跟它有交集才可见——
     # 绝不"默认全局可见"，否则历史上没标隔离 tag 的 Evan 私聊钉桶会泄漏给 Gale。
-    # 不计入 max_tokens 预算（与浮现模式一致）。
+    # 钉桶与普通检索结果共享 max_tokens，避免核心准则绕过总预算。
     pinned_results = []
+    pinned_token_used = 0
     try:
         all_buckets_for_pinned = await bucket_mgr.list_all(include_archive=False)
         target_set = set(domain_filter) if domain_filter else set()
@@ -1230,7 +1249,13 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
             try:
                 clean_meta = {k: v for k, v in meta.items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                pinned_results.append(f"📌 [核心准则] [bucket_id:{b['id']}] {summary}")
+                line = f"📌 [核心准则] [bucket_id:{b['id']}] {summary}"
+                line_tokens = count_tokens_approx(line)
+                if pinned_token_used + line_tokens > max_tokens:
+                    logger.warning(f"search 模式钉桶预算在 {b['id']} 前耗尽")
+                    continue
+                pinned_results.append(line)
+                pinned_token_used += line_tokens
             except Exception as e:
                 logger.warning(f"search 模式钉选桶脱水失败: {e}")
                 continue
@@ -1272,7 +1297,7 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
 
     results = []
-    token_used = 0
+    token_used = pinned_token_used
     for bucket in matches:
         if len(results) >= max_results or token_used >= max_tokens:
             break
@@ -1285,16 +1310,16 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
                 shift = (q_valence - 0.5) * 0.2  # ±0.1 max shift
                 clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
             summary = await dehydrator.dehydrate(strip_wikilinks(bucket["content"]), clean_meta)
-            summary_tokens = count_tokens_approx(summary)
-            if token_used + summary_tokens > max_tokens:
+            if bucket.get("vector_match"):
+                line = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
+            else:
+                line = f"[bucket_id:{bucket['id']}] {summary}"
+            line_tokens = count_tokens_approx(line)
+            if token_used + line_tokens > max_tokens:
                 break
             await bucket_mgr.touch(bucket["id"])
-            if bucket.get("vector_match"):
-                summary = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
-            else:
-                summary = f"[bucket_id:{bucket['id']}] {summary}"
-            results.append(summary)
-            token_used += summary_tokens
+            results.append(line)
+            token_used += line_tokens
         except Exception as e:
             logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
             continue
@@ -1331,12 +1356,13 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
                 try:
                     clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                     summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                    summary_tokens = count_tokens_approx(summary)
-                    if token_used + summary_tokens > max_tokens:
+                    line = f"[最近] [bucket_id:{b['id']}] {summary}"
+                    line_tokens = count_tokens_approx(line)
+                    if token_used + line_tokens > max_tokens:
                         break
                     await bucket_mgr.touch(b["id"])
-                    results.append(f"[最近] [bucket_id:{b['id']}] {summary}")
-                    token_used += summary_tokens
+                    results.append(line)
+                    token_used += line_tokens
                     appended += 1
                 except Exception as e:
                     logger.warning(f"recent-topup dehydrate 失败: {e}")
@@ -1348,7 +1374,7 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
 
     # --- Random surfacing: when search returns < 3, 40% chance to float old memories ---
     # --- 随机浮现：检索结果不足 3 条时，40% 概率从低权重旧桶里漂上来 ---
-    if len(matches) < 3 and random.random() < 0.4:
+    if len(matches) < 3 and token_used < max_tokens and random.random() < 0.4:
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
             matched_ids = {b["id"] for b in matches}
@@ -1356,6 +1382,8 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
                 b for b in all_buckets
                 if b["id"] not in matched_ids
                 and not b["metadata"].get("anchor", False)  # anchor 只在真命中时返回
+                and not b["metadata"].get("pinned", False)
+                and not b["metadata"].get("protected", False)
                 and decay_engine.calculate_score(b["metadata"]) < 2.0
             ]
             if low_weight:
@@ -1364,8 +1392,14 @@ async def breath(  # 2026-07-02 默认闸门 10000/10 → 5000/5，省 token（�
                 for b in drifted:
                     clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                     summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                    drift_results.append(f"[surface_type: random]\n{summary}")
-                results.append("--- 忽然想起来 ---\n" + "\n---\n".join(drift_results))
+                    line = f"[surface_type: random]\n{summary}"
+                    line_tokens = count_tokens_approx(line)
+                    if token_used + line_tokens > max_tokens:
+                        break
+                    drift_results.append(line)
+                    token_used += line_tokens
+                if drift_results:
+                    results.append("--- 忽然想起来 ---\n" + "\n---\n".join(drift_results))
         except Exception as e:
             logger.warning(f"Random surfacing failed / 随机浮现失败: {e}")
 

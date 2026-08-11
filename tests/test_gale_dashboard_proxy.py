@@ -612,6 +612,69 @@ async def test_breath_honors_max_results(monkeypatch, server_module):
 
 
 @pytest.mark.asyncio
+async def test_breath_counts_pinned_buckets_against_token_budget(monkeypatch, server_module):
+    pinned = {
+        "id": "pinned-core",
+        "metadata": {"domain": ["tg-private"], "pinned": True},
+        "content": "核心" * 80,
+    }
+    match = {
+        "id": "search-match",
+        "metadata": {"domain": ["tg-private"]},
+        "content": "检索" * 80,
+    }
+    monkeypatch.setattr(server_module.bucket_mgr, "list_all", AsyncMock(return_value=[pinned]))
+    monkeypatch.setattr(server_module.bucket_mgr, "search", AsyncMock(return_value=[match]))
+    monkeypatch.setattr(server_module.bucket_mgr, "touch", AsyncMock(return_value=True))
+    monkeypatch.setattr(server_module.embedding_engine, "search_similar", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "dehydrate",
+        AsyncMock(side_effect=lambda content, _meta: content),
+    )
+    monkeypatch.setattr(server_module.random, "random", lambda: 1.0)
+
+    result = await server_module.breath(
+        query="核心",
+        domain="tg-private",
+        max_results=3,
+        max_tokens=300,
+        include_recent=0,
+    )
+
+    assert "[bucket_id:pinned-core]" in result
+    assert "[bucket_id:search-match]" not in result
+
+
+@pytest.mark.asyncio
+async def test_breath_noquery_skips_pinned_bucket_that_exceeds_budget(monkeypatch, server_module):
+    pinned = [
+        {
+            "id": "small-core",
+            "metadata": {"pinned": True},
+            "content": "短核心" * 30,
+        },
+        {
+            "id": "oversized-core",
+            "metadata": {"pinned": True},
+            "content": "超长核心" * 200,
+        },
+    ]
+    monkeypatch.setattr(server_module.bucket_mgr, "list_all", AsyncMock(return_value=pinned))
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "dehydrate",
+        AsyncMock(side_effect=lambda content, _meta: content),
+    )
+    monkeypatch.setattr(server_module.random, "random", lambda: 1.0)
+
+    result = await server_module.breath(query="", max_tokens=300, max_results=3)
+
+    assert "[bucket_id:small-core]" in result
+    assert "[bucket_id:oversized-core]" not in result
+
+
+@pytest.mark.asyncio
 async def test_upstream_failure_returns_sanitized_502(monkeypatch, server_module):
     error = httpx.ConnectError(
         "cannot connect to http://127.0.0.1:8790",
