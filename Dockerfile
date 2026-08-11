@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir -r chatnest-requirements.txt
 
 # Night-Fall extension: dream lifecycle + breath-gated auto-surface
 # Night-Fall 扩展：梦境生命周期 + breath 自动浮梦
-RUN pip install --no-cache-dir git+https://github.com/mininicole/Night-Fall.git
+RUN pip install --no-cache-dir git+https://github.com/mininicole/Night-Fall.git@0ebf653
 
 # Copy project files / 复制项目文件
 COPY *.py .

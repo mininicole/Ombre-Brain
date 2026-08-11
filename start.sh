@@ -14,6 +14,7 @@ python -m uvicorn app.main:app \
   --port "${CHATNEST_PORT:-8787}" &
 CHAT_PID=$!
 
+NIGHT_FALL_AUTO_HOUR_UTC=-1 \
 python /app/ombre_nightfall_launcher.py &
 OMBRE_PID=$!
 
@@ -26,7 +27,7 @@ GALE_MCP_SLUG="" \
 GIST_TOKEN="" \
 STATE_GIST_URL="" \
 EVAN_SEND_SECRET="" \
-NIGHT_FALL_AUTO_HOUR_UTC=21 \
+NIGHT_FALL_AUTO_HOUR_UTC=-1 \
 AI_NAME=Gale \
 python /app/ombre_nightfall_launcher.py &
 GALE_PID=$!

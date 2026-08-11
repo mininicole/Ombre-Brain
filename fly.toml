@@ -18,6 +18,11 @@ primary_region = 'nrt'
   NIGHT_FALL_SURFACE_THRESHOLD = '0.50'
   NIGHT_FALL_ATTEMPT_THRESHOLD = '0.35'
   NIGHT_FALL_SPONTANEOUS_SURFACE_PROB = '0.06'
+  # Dream generation is externally woken every day, but the persistent guard
+  # permits at most one successful generation per 72 hours.
+  NIGHT_FALL_GENERATION_COOLDOWN_HOURS = '72'
+  NIGHT_FALL_SOURCE_COOLDOWN_GENERATIONS = '2'
+  NIGHT_FALL_DUPLICATE_SIMHASH_DISTANCE = '4'
 
 [http_service]
   internal_port = 8000
