@@ -664,7 +664,7 @@ async def breath_hook(request):
         scored = sorted(unresolved, key=lambda b: decay_engine.calculate_score(b["metadata"]), reverse=True)
 
         parts = []
-        token_budget = 3000
+        token_budget = 4000
         for b in pinned:
             summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
             line = f"📌 [核心准则] {summary}"
@@ -682,8 +682,8 @@ async def breath_hook(request):
             pool = candidates[1:min(20, len(candidates))]
             random.shuffle(pool)
             candidates = top1 + pool + candidates[min(20, len(candidates)):]
-        # Hard cap: max 3 dynamic buckets in hook; all share the 3000-token budget.
-        candidates = candidates[:3]
+        # Hard cap: max 2 dynamic buckets in hook; all share the 4000-token budget.
+        candidates = candidates[:2]
 
         for b in candidates:
             if token_budget <= 0:
@@ -963,17 +963,17 @@ async def _merge_or_create(
 # 有参数：按关键词+情感坐标检索记忆
 # =============================================================
 @mcp.tool()
-async def breath(  # 2026-08-11 默认闸门 5000/5 → 3000/3；所有浮现共享同一预算
+async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的近期记忆留空间
     query: str = "",
-    max_tokens: int = 3000,
+    max_tokens: int = 4000,
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
-    max_results: int = 3,
+    max_results: int = 2,
     importance_min: int = -1,
     include_recent: int = 0,  # 2026-07-07：search 分支追加 N 条"最近未解决桶"（共享 max_tokens）
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制包括钉桶在内的返回总token上限(默认3000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认3,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,在关键词/向量匹配之后再追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），共享 max_tokens 预算，token 总量不翻倍。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制包括钉桶在内的返回总token上限(默认4000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认2,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,优先追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），再填充关键词/向量匹配，共享 max_tokens 预算。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1298,8 +1298,18 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 3000/3；所有浮现共
 
     results = []
     token_used = pinned_token_used
+    # Evan asks for up to two recent buckets on every private-chat recall.
+    # Reserve 600 tokens per requested recent bucket before filling semantic
+    # matches, otherwise the five pinned buckets plus the first match can use
+    # the entire budget and recent context never gets a chance to surface.
+    recent_reserve = min(
+        max(0, max_tokens - pinned_token_used),
+        min(max(include_recent, 0), 2) * 600,
+    )
+    search_token_ceiling = max_tokens - recent_reserve
+    matched_result_count = 0
     for bucket in matches:
-        if len(results) >= max_results or token_used >= max_tokens:
+        if matched_result_count >= max_results or token_used >= search_token_ceiling:
             break
         try:
             clean_meta = {k: v for k, v in bucket["metadata"].items() if k != "tags"}
@@ -1315,11 +1325,12 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 3000/3；所有浮现共
             else:
                 line = f"[bucket_id:{bucket['id']}] {summary}"
             line_tokens = count_tokens_approx(line)
-            if token_used + line_tokens > max_tokens:
+            if token_used + line_tokens > search_token_ceiling:
                 break
             await bucket_mgr.touch(bucket["id"])
             results.append(line)
             token_used += line_tokens
+            matched_result_count += 1
         except Exception as e:
             logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
             continue

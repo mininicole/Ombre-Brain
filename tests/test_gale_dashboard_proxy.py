@@ -647,6 +647,56 @@ async def test_breath_counts_pinned_buckets_against_token_budget(monkeypatch, se
 
 
 @pytest.mark.asyncio
+async def test_breath_reserves_budget_for_two_recent_buckets(monkeypatch, server_module):
+    pinned = {
+        "id": "pinned-core",
+        "metadata": {"pinned": True, "created": "2026-08-01T00:00:00Z"},
+        "content": "核心" * 80,
+    }
+    match = {
+        "id": "search-match",
+        "metadata": {"created": "2026-08-08T00:00:00Z"},
+        "content": "检索" * 80,
+    }
+    recent_one = {
+        "id": "recent-one",
+        "metadata": {"created": "2026-08-11T02:00:00Z"},
+        "content": "最近甲" * 40,
+    }
+    recent_two = {
+        "id": "recent-two",
+        "metadata": {"created": "2026-08-11T01:00:00Z"},
+        "content": "最近乙" * 40,
+    }
+    monkeypatch.setattr(
+        server_module.bucket_mgr,
+        "list_all",
+        AsyncMock(side_effect=[[pinned], [pinned, match, recent_one, recent_two]]),
+    )
+    monkeypatch.setattr(server_module.bucket_mgr, "search", AsyncMock(return_value=[match]))
+    monkeypatch.setattr(server_module.bucket_mgr, "touch", AsyncMock(return_value=True))
+    monkeypatch.setattr(server_module.embedding_engine, "search_similar", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "dehydrate",
+        AsyncMock(side_effect=lambda content, _meta: content),
+    )
+    monkeypatch.setattr(server_module.random, "random", lambda: 1.0)
+
+    result = await server_module.breath(
+        query="今天",
+        max_results=2,
+        max_tokens=1000,
+        include_recent=2,
+    )
+
+    assert "[bucket_id:pinned-core]" in result
+    assert "[bucket_id:recent-one]" in result
+    assert "[bucket_id:recent-two]" in result
+    assert "[bucket_id:search-match]" not in result
+
+
+@pytest.mark.asyncio
 async def test_breath_noquery_skips_pinned_bucket_that_exceeds_budget(monkeypatch, server_module):
     pinned = [
         {
