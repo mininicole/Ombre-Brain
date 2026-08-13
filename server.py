@@ -58,6 +58,7 @@ from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
+from presence_bridge import read_presence, write_presence
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -157,6 +158,55 @@ mcp = FastMCP(
     host="0.0.0.0",
     port=OMBRE_PORT,
 )
+
+
+# Guardian's official-client context bridge.  This is deliberately stored next
+# to, not inside, the memory buckets so breath/search/dream and the Dashboard can
+# never surface it as long-term memory.
+_GUARDIAN_PRESENCE_FILE = os.path.join(config["buckets_dir"], ".guardian_presence.json")
+
+
+@mcp.tool()
+async def presence(
+    topic: str = "",
+    source: str = "codex",
+    action: str = "update",
+) -> str:
+    """Update/read short-lived Guardian context from the official Codex chat.
+
+    update: topic must be a privacy-safe one-sentence summary, never a transcript
+    or secret. It expires automatically and is not a memory bucket.
+    read: returns the currently active record, if any.
+    """
+    action = str(action or "update").strip().lower()
+    if action == "read":
+        return _json_lib.dumps(
+            read_presence(_GUARDIAN_PRESENCE_FILE), ensure_ascii=False
+        )
+    if action != "update":
+        return "action must be update or read"
+    try:
+        saved = write_presence(_GUARDIAN_PRESENCE_FILE, topic, source=source)
+    except ValueError as exc:
+        return str(exc)
+    return _json_lib.dumps(
+        {
+            "updated": True,
+            "last_user_at": saved["last_user_at"],
+            "expires_at": saved["expires_at"],
+        },
+        ensure_ascii=False,
+    )
+
+
+@mcp.custom_route("/api/presence", methods=["GET"])
+async def api_presence(request):
+    """Read-only REST view used by the headless Guardian workflow."""
+    from starlette.responses import JSONResponse
+
+    response = JSONResponse(read_presence(_GUARDIAN_PRESENCE_FILE))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # =============================================================
@@ -3650,7 +3700,7 @@ async def api_generate_gale_dream(request):
 # 白名单只放 recall/remember，其他一律 404——不给任何"顺手扫别的 endpoint"的机会。
 # 与 gale_mcp_proxy 复用同一 httpx client（同 base_url 8790）+ 同一 header 清洗。
 # CF Access 只罩 /gale-dash/*，本前缀 /g-<slug>/* 免过 SSO，无头脚本可直连。
-_GALE_API_ALLOWED = {"recall", "remember"}
+_GALE_API_ALLOWED = {"recall", "remember", "presence"}
 
 
 async def gale_api_proxy(request):
