@@ -199,11 +199,30 @@ async def presence(
     )
 
 
-@mcp.custom_route("/api/presence", methods=["GET"])
+@mcp.custom_route("/api/presence", methods=["GET", "POST"])
 async def api_presence(request):
-    """Read-only REST view used by the headless Guardian workflow."""
+    """REST bridge on the same unguessable Gale API path as MCP."""
     from starlette.responses import JSONResponse
 
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            saved = write_presence(
+                _GUARDIAN_PRESENCE_FILE,
+                body.get("topic", ""),
+                source=body.get("source", "codex"),
+            )
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        response = JSONResponse(
+            {
+                "updated": True,
+                "last_user_at": saved["last_user_at"],
+                "expires_at": saved["expires_at"],
+            }
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
     response = JSONResponse(read_presence(_GUARDIAN_PRESENCE_FILE))
     response.headers["Cache-Control"] = "no-store"
     return response
