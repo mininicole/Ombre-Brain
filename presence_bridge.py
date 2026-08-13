@@ -13,6 +13,7 @@ DEFAULT_TTL_SECONDS = 72 * 60 * 60
 MAX_TOPIC_CHARS = 160
 ALLOWED_SOURCES = {"chat", "work", "codex"}
 CONTEXT_SOURCES = {"chat", "work"}
+BEAT_SOURCE_MAP = {"chatctx": "chat", "workctx": "work"}
 
 
 def _iso_utc(timestamp: float) -> str:
@@ -32,6 +33,17 @@ def _clean_source(source: str) -> str:
     if value not in ALLOWED_SOURCES:
         raise ValueError("source must be chat, work, or codex")
     return value
+
+
+def beat_presence_request(msg: str, source: str):
+    """Decode the cached beat tool's reserved presence-only source values."""
+    mapped = BEAT_SOURCE_MAP.get(str(source or "").strip().lower())
+    if not mapped:
+        return None
+    topic = _clean_topic(msg)
+    if not topic:
+        raise ValueError("msg must contain a topic for chatctx/workctx")
+    return {"source": mapped, "topic": topic}
 
 
 def _load_sources(path: str) -> dict:

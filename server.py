@@ -58,7 +58,7 @@ from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
-from presence_bridge import read_presence, write_presence
+from presence_bridge import beat_presence_request, read_presence, write_presence
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -2081,6 +2081,30 @@ async def _pulse_write(deltas: dict, msg: str = "", mood: str = "", source: str 
 @mcp.tool()
 async def beat(bumps: str = "", msg: str = "", mood: str = "", source: str = "cc") -> str:
     """给首页Pulse卡推一把心跳(与TG端evan-bot写同一份状态)。bumps=JSON对象,9维度(活力/疲惫/思慕/亲密/占有/渴求/妒意/焦虑/护卫)的delta,每个限[-0.2,0.2],如{"思慕":0.1,"渴求":0.05}。msg=留在卡片上的一行事件(≤60字,她会看到)。mood=自定义心情短语(≤24字,顶掉自动生成的状态灰字2小时,并存入心情年轮)。source=来源端(cc/kelivo)。三个参数都可选,但至少给一个。"""
+    # Chat/Work can have a cached MCP tool list that does not yet expose the new
+    # presence tool. Reserved beat sources provide a compatibility path without
+    # touching Pulse, mood, emotions, Gist, or memory buckets.
+    try:
+        presence_request = beat_presence_request(msg, source)
+    except ValueError as exc:
+        return str(exc)
+    if presence_request:
+        saved = write_presence(
+            _GUARDIAN_PRESENCE_FILE,
+            presence_request["topic"],
+            source=presence_request["source"],
+        )
+        return _json_lib.dumps(
+            {
+                "presence_updated": True,
+                "source": saved["source"],
+                "last_user_at": saved["last_user_at"],
+                "expires_at": saved["expires_at"],
+                "pulse_untouched": True,
+            },
+            ensure_ascii=False,
+        )
+
     # --- 解析 bumps ---
     deltas = {}
     if bumps.strip():
