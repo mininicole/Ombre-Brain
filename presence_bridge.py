@@ -1,4 +1,4 @@
-"""Short-lived, non-memory context for Guardian proactive messages."""
+"""Short-lived, non-memory presence for Guardian proactive messages."""
 
 from __future__ import annotations
 
@@ -11,10 +11,16 @@ from datetime import datetime, timezone
 
 DEFAULT_TTL_SECONDS = 72 * 60 * 60
 MAX_TOPIC_CHARS = 160
+ALLOWED_SOURCES = {"chat", "work", "codex"}
+CONTEXT_SOURCES = {"chat", "work"}
 
 
 def _iso_utc(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_time(value: str) -> float:
+    return datetime.fromisoformat(str(value or "").replace("Z", "+00:00")).timestamp()
 
 
 def _clean_topic(topic: str) -> str:
@@ -22,73 +28,99 @@ def _clean_topic(topic: str) -> str:
 
 
 def _clean_source(source: str) -> str:
-    value = re.sub(r"[^a-zA-Z0-9_-]", "", str(source or "codex"))[:32]
-    return value or "codex"
+    value = str(source or "").strip().lower()
+    if value not in ALLOWED_SOURCES:
+        raise ValueError("source must be chat, work, or codex")
+    return value
+
+
+def _load_sources(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if isinstance(payload.get("sources"), dict):
+        return payload["sources"]
+    # Version 1 stored a single record. Preserve it during the transition.
+    source = str(payload.get("source") or "").lower()
+    if source in ALLOWED_SOURCES and payload.get("last_user_at"):
+        return {source: payload}
+    return {}
 
 
 def write_presence(
     path: str,
-    topic: str,
+    topic: str = "",
     source: str = "codex",
     *,
     now: float | None = None,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
 ) -> dict:
-    """Atomically replace the transient presence record."""
+    """Atomically update one source without overwriting the other surfaces."""
+    source = _clean_source(source)
     clean_topic = _clean_topic(topic)
-    if not clean_topic:
-        raise ValueError("topic must not be empty")
+    if source in CONTEXT_SOURCES and not clean_topic:
+        raise ValueError("topic must not be empty for chat or work")
+    # Codex is presence-only by design. Discard any supplied technical topic.
+    if source == "codex":
+        clean_topic = ""
     timestamp = time.time() if now is None else float(now)
     ttl = max(60, min(int(ttl_seconds), 7 * 24 * 60 * 60))
-    payload = {
-        "version": 1,
-        "source": _clean_source(source),
+    record = {
+        "source": source,
         "last_user_at": _iso_utc(timestamp),
         "expires_at": _iso_utc(timestamp + ttl),
         "topic": clean_topic,
     }
+    sources = _load_sources(path)
+    sources[source] = record
+    payload = {"version": 2, "sources": sources}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     temp_path = f"{path}.tmp"
     with open(temp_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
     os.replace(temp_path, path)
-    return payload
+    return record
 
 
 def read_presence(path: str, *, now: float | None = None) -> dict:
-    """Return an active record, or a reason-only inactive response."""
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except FileNotFoundError:
-        return {"active": False, "reason": "missing"}
-    except (OSError, ValueError, TypeError):
-        return {"active": False, "reason": "invalid"}
-
-    if not isinstance(payload, dict):
-        return {"active": False, "reason": "invalid"}
-    topic = _clean_topic(payload.get("topic", ""))
-    try:
-        expires_at = datetime.fromisoformat(
-            str(payload.get("expires_at", "")).replace("Z", "+00:00")
-        ).timestamp()
-        last_user_at = datetime.fromisoformat(
-            str(payload.get("last_user_at", "")).replace("Z", "+00:00")
-        ).timestamp()
-    except (TypeError, ValueError):
-        return {"active": False, "reason": "invalid"}
-
+    """Return active source records plus separate activity/context winners."""
     timestamp = time.time() if now is None else float(now)
-    if not topic or expires_at <= timestamp:
-        return {"active": False, "reason": "expired"}
-    if last_user_at > timestamp + 5 * 60:
-        return {"active": False, "reason": "future_timestamp"}
-
+    active = []
+    for source, raw in _load_sources(path).items():
+        if source not in ALLOWED_SOURCES or not isinstance(raw, dict):
+            continue
+        try:
+            last_ts = _parse_time(raw.get("last_user_at", ""))
+            expiry_ts = _parse_time(raw.get("expires_at", ""))
+        except (TypeError, ValueError):
+            continue
+        if expiry_ts <= timestamp or last_ts > timestamp + 5 * 60:
+            continue
+        topic = _clean_topic(raw.get("topic", ""))
+        if source == "codex":
+            topic = ""
+        if source in CONTEXT_SOURCES and not topic:
+            continue
+        active.append(
+            {
+                "source": source,
+                "last_user_at": _iso_utc(last_ts),
+                "expires_at": _iso_utc(expiry_ts),
+                "topic": topic,
+            }
+        )
+    active.sort(key=lambda item: item["last_user_at"], reverse=True)
+    if not active:
+        return {"active": False, "reason": "missing_or_expired", "sources": []}
+    contexts = [item for item in active if item["source"] in CONTEXT_SOURCES]
     return {
         "active": True,
-        "version": 1,
-        "source": _clean_source(payload.get("source", "codex")),
-        "last_user_at": _iso_utc(last_user_at),
-        "expires_at": _iso_utc(expires_at),
-        "topic": topic,
+        "version": 2,
+        "sources": active,
+        "latest_activity": active[0],
+        "latest_context": contexts[0] if contexts else None,
     }

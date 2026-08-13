@@ -174,8 +174,9 @@ async def presence(
 ) -> str:
     """Update/read short-lived Guardian context from the official Codex chat.
 
-    update: topic must be a privacy-safe one-sentence summary, never a transcript
-    or secret. It expires automatically and is not a memory bucket.
+    update: source=chat/work requires a privacy-safe one-sentence topic summary.
+    source=codex records activity only and always discards topic. Records expire
+    automatically and are not memory buckets.
     read: returns the currently active record, if any.
     """
     action = str(action or "update").strip().lower()
