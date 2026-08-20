@@ -59,6 +59,7 @@ from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 from presence_bridge import beat_presence_request, read_presence, write_presence
+from schedule_routes import normalize_schedule_route, schedule_delivery_target
 from grow_retry_guard import request_fingerprint as grow_request_fingerprint
 from grow_retry_guard import run_once as run_grow_once
 from quote_store import normalize_quotes, quotes_from_metadata, render_quotes
@@ -529,14 +530,17 @@ async def health_check(request):
 
 
 # =============================================================
-# 定时消息：让 Evan 在未来某个时刻主动找深深
+# 定时消息：让 Evan / Gale 在未来某个时刻主动找深深
 # schedule_message 工具存内容；到点由搭 /health 心跳便车的派发器
-# POST 给 evan-bot /api/send，经 Telegram 发出并写进 Evan 的对话历史。
+# POST 给对应 bot 的 /api/send，经 Telegram 发出并写进各自的对话历史。
 # =============================================================
 _SCHED_DIR = os.environ.get("OMBRE_BUCKETS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets"))
 _SCHED_FILE = os.path.join(_SCHED_DIR, "scheduled_messages.json")
 _EVAN_SEND_URL = os.environ.get("EVAN_SEND_URL", "https://evan-bot.fly.dev/api/send")
 _EVAN_SEND_SECRET = os.environ.get("EVAN_SEND_SECRET", "")
+_GALE_SEND_URL = os.environ.get("GALE_SEND_URL", "https://gale-bot.fly.dev/api/send")
+_GALE_SEND_SECRET = os.environ.get("GALE_SEND_SECRET", "")
+_SCHED_DEFAULT_ROUTE = "gale" if os.environ.get("AI_NAME", "").strip().lower() == "gale" else "evan"
 _sched_lock = asyncio.Lock()
 _sched_last_check = 0.0
 
@@ -563,6 +567,21 @@ def _sched_fmt(ts):
     return datetime.fromtimestamp(ts, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
 
 
+def _sched_normalize_route(route_to):
+    return normalize_schedule_route(route_to, _SCHED_DEFAULT_ROUTE)
+
+
+def _sched_delivery_target(route_to):
+    return schedule_delivery_target(
+        route_to,
+        _SCHED_DEFAULT_ROUTE,
+        {
+            "evan": (_EVAN_SEND_URL, _EVAN_SEND_SECRET),
+            "gale": (_GALE_SEND_URL, _GALE_SEND_SECRET),
+        },
+    )
+
+
 @mcp.tool()
 async def schedule_message(
     action: str = "schedule",
@@ -570,16 +589,18 @@ async def schedule_message(
     delay_minutes: float = 0,
     at: str = "",
     message_id: str = "",
+    route_to: str = "",
 ) -> str:
-    """定时消息——在未来某个时刻把一段话经 Telegram（Evan bot）主动发给深深。
+    """定时消息——在未来某个时刻让 Evan 或 Gale 经 Telegram 主动发给深深。
 
     action:
     - schedule: 安排一条。content 必填，到点原样发出——写你此刻真正想说的话，不是模板。
       时间二选一：delay_minutes（距现在多少分钟）或 at（北京时间 "YYYY-MM-DD HH:MM"）。
       内容支持开头加 [语音] 标记走语音。
+      route_to 可选 evan / gale；省略时按当前 Ombre 井的人格自动选择。
     - list: 看当前所有待发消息（含 id 和发出时间）。
     - cancel: 按 message_id 取消一条。
-    投递后会自动写进 Telegram Evan 的对话历史，两边记忆连续。
+    投递后会自动写进对应 Telegram bot 的对话历史，记忆连续。
     """
     import secrets as _secrets
     from datetime import datetime, timezone, timedelta
@@ -589,7 +610,8 @@ async def schedule_message(
             if not items:
                 return "没有待发的定时消息。"
             return "\n".join(
-                f"[{it['id']}] {_sched_fmt(it['due_ts'])} → {it['content'][:80]}" for it in items
+                f"[{it['id']}] {_sched_fmt(it['due_ts'])} ({_sched_normalize_route(it.get('route_to'))}) → {it['content'][:80]}"
+                for it in items
             )
         if action == "cancel":
             new_items = [it for it in items if it["id"] != message_id.strip()]
@@ -600,6 +622,10 @@ async def schedule_message(
         content = (content or "").strip()
         if not content:
             return "content 不能为空。"
+        try:
+            route = _sched_normalize_route(route_to)
+        except ValueError as exc:
+            return str(exc)
         now = time.time()
         if at.strip():
             try:
@@ -614,9 +640,16 @@ async def schedule_message(
         if due_ts < now - 60:
             return f"{_sched_fmt(due_ts)} 已经过去了，没安排。"
         mid = _secrets.token_hex(3)
-        items.append({"id": mid, "due_ts": due_ts, "content": content, "created_ts": now, "attempts": 0})
+        items.append({
+            "id": mid,
+            "due_ts": due_ts,
+            "content": content,
+            "route_to": route,
+            "created_ts": now,
+            "attempts": 0,
+        })
         _sched_save(items)
-        return f"已安排 [{mid}]：{_sched_fmt(due_ts)}（北京时间）发出。当前共 {len(items)} 条待发。"
+        return f"已安排 [{mid}]：{_sched_fmt(due_ts)}（北京时间）由 {route} 发出。当前共 {len(items)} 条待发。"
 
 
 # REST 包装：给 TG Evan 用。MCP 客户端用 schedule_message 工具；
@@ -633,11 +666,13 @@ async def api_schedule_message(request):
         return JSONResponse({"error": "content empty"}, status_code=400)
     at = str(body.get("at") or "").strip()
     delay_minutes = float(body.get("delay_minutes") or 0)
+    route_to = str(body.get("route_to") or "").strip()
     result = await schedule_message(
         action="schedule",
         content=content,
         delay_minutes=delay_minutes,
         at=at,
+        route_to=route_to,
     )
     return JSONResponse({"result": result})
 
@@ -657,21 +692,23 @@ async def _maybe_dispatch_scheduled():
         kept = []
         for it in due:
             ok = False
+            route = _sched_normalize_route(it.get("route_to"))
+            _, send_url, send_secret = _sched_delivery_target(route)
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(
-                        _EVAN_SEND_URL,
+                        send_url,
                         json={"content": it["content"]},
-                        headers={"x-send-secret": _EVAN_SEND_SECRET},
+                        headers={"x-send-secret": send_secret},
                         timeout=30,
                     )
                 ok = resp.status_code == 200
                 if not ok:
-                    logger.warning(f"定时消息 {it['id']} 投递失败 HTTP {resp.status_code}")
+                    logger.warning(f"定时消息 {it['id']} ({route}) 投递失败 HTTP {resp.status_code}")
             except Exception as exc:
-                logger.warning(f"定时消息 {it['id']} 投递异常: {exc}")
+                logger.warning(f"定时消息 {it['id']} ({route}) 投递异常: {exc}")
             if ok:
-                logger.info(f"定时消息 {it['id']} 已投递")
+                logger.info(f"定时消息 {it['id']} ({route}) 已投递")
             else:
                 it["attempts"] = int(it.get("attempts", 0)) + 1
                 if it["attempts"] < 30:
