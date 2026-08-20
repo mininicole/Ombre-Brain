@@ -59,6 +59,9 @@ from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
 from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
 from presence_bridge import beat_presence_request, read_presence, write_presence
+from grow_retry_guard import request_fingerprint as grow_request_fingerprint
+from grow_retry_guard import run_once as run_grow_once
+from quote_store import normalize_quotes, quotes_from_metadata, render_quotes
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -112,6 +115,20 @@ bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket 
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
+
+
+def _summary_metadata(metadata: dict) -> dict:
+    """Metadata safe to send through the dehydrator.
+
+    ``quotes`` is a search-only verbatim channel.  Excluding it here keeps
+    ordinary breath/dream/summary paths from leaking or paraphrasing it.
+    """
+
+    return {
+        key: value
+        for key, value in (metadata or {}).items()
+        if key not in {"tags", "quotes"}
+    }
 
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
@@ -686,7 +703,9 @@ async def breath_hook(request):
         parts = []
         token_budget = 4000
         for b in pinned:
-            summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+            summary = await dehydrator.dehydrate(
+                strip_wikilinks(b["content"]), _summary_metadata(b["metadata"])
+            )
             line = f"📌 [核心准则] {summary}"
             line_tokens = count_tokens_approx(line)
             if line_tokens > token_budget:
@@ -708,7 +727,9 @@ async def breath_hook(request):
         for b in candidates:
             if token_budget <= 0:
                 break
-            summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+            summary = await dehydrator.dehydrate(
+                strip_wikilinks(b["content"]), _summary_metadata(b["metadata"])
+            )
             summary_tokens = count_tokens_approx(summary)
             if summary_tokens > token_budget:
                 break
@@ -772,6 +793,7 @@ async def api_recall(request):
             max_results=max(1, min(max_results, 20)),
             domain=domain,
             include_recent=max(0, min(include_recent, 10)),
+            quotes=bool(body.get("quotes", False)),
         )
         # Night-Fall auto-surface — query 分支默认不触发，这里手动调一下，
         # 让 REST 客户端也能有"梦自己浮上来"的体验。
@@ -914,6 +936,7 @@ async def _merge_or_create(
     valence: float,
     arousal: float,
     name: str = "",
+    quotes: list[dict[str, str]] | None = None,
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -938,15 +961,17 @@ async def _merge_or_create(
                 old_a = bucket["metadata"].get("arousal", 0.3)
                 merged_valence = round((old_v + valence) / 2, 2)
                 merged_arousal = round((old_a + arousal) / 2, 2)
-                await bucket_mgr.update(
-                    bucket["id"],
-                    content=merged,
-                    tags=list(set((bucket["metadata"].get("tags") or []) + tags)),
-                    importance=max(bucket["metadata"].get("importance") or 5, importance),
-                    domain=list(set((bucket["metadata"].get("domain") or []) + domain)),
-                    valence=merged_valence,
-                    arousal=merged_arousal,
-                )
+                update_kwargs = {
+                    "content": merged,
+                    "tags": list(set((bucket["metadata"].get("tags") or []) + tags)),
+                    "importance": max(bucket["metadata"].get("importance") or 5, importance),
+                    "domain": list(set((bucket["metadata"].get("domain") or []) + domain)),
+                    "valence": merged_valence,
+                    "arousal": merged_arousal,
+                }
+                if quotes:
+                    update_kwargs["quotes_append"] = quotes
+                await bucket_mgr.update(bucket["id"], **update_kwargs)
                 # --- Update embedding after merge ---
                 try:
                     await embedding_engine.generate_and_store(bucket["id"], merged)
@@ -964,6 +989,7 @@ async def _merge_or_create(
         valence=valence,
         arousal=arousal,
         name=name or None,
+        quotes=quotes,
     )
     # --- Generate embedding for new bucket ---
     try:
@@ -971,6 +997,117 @@ async def _merge_or_create(
     except Exception:
         pass
     return bucket_id, False
+
+
+_FEEL_SEMANTIC_THRESHOLD = 0.65
+_FEEL_SEMANTIC_DISABLED_NOTE = (
+    "[检索降级：语义索引暂不可用，本次仅按关键词字面匹配。]"
+)
+
+
+async def _surface_feels(query: str, max_tokens: int) -> str:
+    """Return only feel buckets related to the caller's current question."""
+
+    query = str(query or "").strip()
+    if not query:
+        return (
+            "feel 需要一个关键词。感受不是列表；先说你在想什么，"
+            "我才知道该翻哪一段。"
+        )
+
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        feels = [
+            bucket
+            for bucket in all_buckets
+            if bucket.get("metadata", {}).get("type") == "feel"
+        ]
+        if not feels:
+            return "还没有留下过 feel。"
+
+        feel_ids = {str(bucket.get("id") or "") for bucket in feels}
+        scores: dict[str, float] = {}
+        notice = ""
+        if embedding_engine.enabled:
+            try:
+                pairs = await embedding_engine.search_similar(
+                    query,
+                    top_k=max(len(feel_ids), 1),
+                    allowed_bucket_ids=feel_ids,
+                )
+                scores = {
+                    str(bucket_id): float(score)
+                    for bucket_id, score in pairs
+                    if float(score) >= _FEEL_SEMANTIC_THRESHOLD
+                }
+            except Exception as exc:
+                logger.warning(
+                    "Feel semantic search failed; using literal fallback: %s",
+                    type(exc).__name__,
+                )
+                notice = _FEEL_SEMANTIC_DISABLED_NOTE
+        else:
+            notice = _FEEL_SEMANTIC_DISABLED_NOTE
+
+        if not scores:
+            needle = query.lower()
+            for bucket in feels:
+                meta = bucket.get("metadata", {})
+                haystack = " ".join(
+                    [
+                        str(bucket.get("content") or ""),
+                        str(meta.get("name") or ""),
+                        " ".join(str(tag) for tag in (meta.get("tags") or [])),
+                    ]
+                ).lower()
+                if needle in haystack:
+                    scores[str(bucket.get("id") or "")] = 0.0
+
+        matched = [
+            bucket
+            for bucket in feels
+            if str(bucket.get("id") or "") in scores
+        ]
+        if not matched:
+            empty = f"没有和「{query}」相关的 feel。"
+            return f"{notice}\n{empty}" if notice else empty
+
+        matched.sort(
+            key=lambda bucket: (
+                scores.get(str(bucket.get("id") or ""), 0.0),
+                str(bucket.get("metadata", {}).get("created", "")),
+            ),
+            reverse=True,
+        )
+
+        results = []
+        token_used = 0
+        omitted = 0
+        for index, bucket in enumerate(matched):
+            created = bucket["metadata"].get("created", "")
+            entry = (
+                f"[{created}] [bucket_id:{bucket['id']}]\n"
+                f"{strip_wikilinks(bucket['content'])}"
+            )
+            cost = count_tokens_approx(entry)
+            if token_used + cost > max_tokens:
+                omitted = len(matched) - index
+                break
+            results.append(entry)
+            token_used += cost
+
+        header = f"=== 和「{query}」相关的 feel（{len(matched)} 条）==="
+        parts = [part for part in (notice, header, "\n---\n".join(results)) if part]
+        output = "\n".join(parts)
+        if omitted:
+            output += (
+                f"\n\n另有 {omitted} 条相关 feel 因 token 预算不足未返回；"
+                "正文未截断或摘要。"
+            )
+        return output
+    except Exception as exc:
+        logger.error("Feel retrieval failed: %s", exc)
+        return "读取 feel 失败。"
 
 
 # =============================================================
@@ -992,8 +1129,9 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
     max_results: int = 2,
     importance_min: int = -1,
     include_recent: int = 0,  # 2026-07-07：search 分支追加 N 条"最近未解决桶"（共享 max_tokens）
+    quotes: bool = False,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制包括钉桶在内的返回总token上限(默认4000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认2,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,优先追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），再填充关键词/向量匹配，共享 max_tokens 预算。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制包括钉桶在内的返回总token上限(默认4000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认2,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,优先追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），再填充关键词/向量匹配，共享 max_tokens 预算。quotes=True 仅为本次查询命中的桶附上写入时主动保留的原话；普通浮现绝不返回引语。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1020,7 +1158,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
             if token_used >= max_tokens:
                 break
             try:
-                clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                clean_meta = _summary_metadata(b["metadata"])
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 t = count_tokens_approx(summary)
                 if token_used + t > max_tokens:
@@ -1064,7 +1202,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
         pinned_token_used = 0
         for b in pinned_buckets:
             try:
-                clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                clean_meta = _summary_metadata(b["metadata"])
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 line = f"📌 [核心准则] [bucket_id:{b['id']}] {summary}"
                 line_tokens = count_tokens_approx(line)
@@ -1135,7 +1273,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
             if token_budget <= 0:
                 break
             try:
-                clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                clean_meta = _summary_metadata(b["metadata"])
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 score = decay_engine.calculate_score(b["metadata"])
                 line = f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}"
@@ -1172,7 +1310,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                     # 偏向老的：从最老的 70% 里随机抽，避开"最近刚动过的"
                     cutoff = max(1, int(len(wave_pool) * 0.7))
                     wave = random.choice(wave_pool[:cutoff])
-                    clean_meta = {k: v for k, v in wave["metadata"].items() if k != "tags"}
+                    clean_meta = _summary_metadata(wave["metadata"])
                     wave_summary = await dehydrator.dehydrate(
                         strip_wikilinks(wave["content"]), clean_meta
                     )
@@ -1222,23 +1360,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
     # --- Feel retrieval: domain="feel" is a special channel ---
     # --- Feel 检索：domain="feel" 是独立入口 ---
     if domain.strip().lower() == "feel":
-        try:
-            all_buckets = await bucket_mgr.list_all(include_archive=False)
-            feels = [b for b in all_buckets if b["metadata"].get("type") == "feel"]
-            feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
-            if not feels:
-                return "没有留下过 feel。"
-            results = []
-            for f in feels:
-                created = f["metadata"].get("created", "")
-                entry = f"[{created}] [bucket_id:{f['id']}]\n{strip_wikilinks(f['content'])}"
-                results.append(entry)
-                if count_tokens_approx("\n---\n".join(results)) > max_tokens:
-                    break
-            return "=== 你留下的 feel ===\n" + "\n---\n".join(results)
-        except Exception as e:
-            logger.error(f"Feel retrieval failed: {e}")
-            return "读取 feel 失败。"
+        return await _surface_feels(query, max_tokens)
 
     # --- With args: search mode (keyword + vector dual channel) ---
     # --- 有参数：检索模式（关键词 + 向量双通道）---
@@ -1267,7 +1389,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
             if target_set and not (set(bucket_doms) & target_set):
                 continue
             try:
-                clean_meta = {k: v for k, v in meta.items() if k != "tags"}
+                clean_meta = _summary_metadata(meta)
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 line = f"📌 [核心准则] [bucket_id:{b['id']}] {summary}"
                 line_tokens = count_tokens_approx(line)
@@ -1332,7 +1454,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
         if matched_result_count >= max_results or token_used >= search_token_ceiling:
             break
         try:
-            clean_meta = {k: v for k, v in bucket["metadata"].items() if k != "tags"}
+            clean_meta = _summary_metadata(bucket["metadata"])
             # --- Memory reconstruction: shift displayed valence by current mood ---
             # --- 记忆重构：根据当前情绪微调展示层 valence（±0.1）---
             if q_valence is not None and "valence" in clean_meta:
@@ -1344,6 +1466,12 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                 line = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
             else:
                 line = f"[bucket_id:{bucket['id']}] {summary}"
+            if quotes:
+                quote_block = render_quotes(
+                    quotes_from_metadata(bucket.get("metadata", {}))
+                )
+                if quote_block:
+                    line = f"{line}\n{quote_block}"
             line_tokens = count_tokens_approx(line)
             if token_used + line_tokens > search_token_ceiling:
                 break
@@ -1385,7 +1513,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                 if appended >= include_recent or token_used >= max_tokens:
                     break
                 try:
-                    clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                    clean_meta = _summary_metadata(b["metadata"])
                     summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                     line = f"[最近] [bucket_id:{b['id']}] {summary}"
                     line_tokens = count_tokens_approx(line)
@@ -1421,7 +1549,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                 drifted = random.sample(low_weight, min(random.randint(1, 3), len(low_weight)))
                 drift_results = []
                 for b in drifted:
-                    clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                    clean_meta = _summary_metadata(b["metadata"])
                     summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                     line = f"[surface_type: random]\n{summary}"
                     line_tokens = count_tokens_approx(line)
@@ -1463,13 +1591,21 @@ async def hold(
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
+    quotes: list | None = None,
 ) -> str:
-    """存储单条记忆,自动打标+合并。tags/domain逗号分隔,domain非空时覆盖自动主题。importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
+    """存储单条记忆,自动打标+合并。tags/domain逗号分隔,domain非空时覆盖自动主题。importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。quotes 可主动保留最多3句原话；普通浮现不会返回，只有 breath(query=..., quotes=True) 才会附上。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
     if not content or not content.strip():
         return "内容为空，无法存储。"
+
+    try:
+        normalized_quotes = normalize_quotes(quotes)
+    except ValueError as exc:
+        return f"引语未保存：{exc}"
+    if feel and normalized_quotes:
+        return "feel 不接收 quotes；原话应随对应事件记忆保存。"
 
     importance = max(1, min(10, importance))
     extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
@@ -1543,6 +1679,7 @@ async def hold(
             name=suggested_name or None,
             bucket_type="permanent",
             pinned=True,
+            quotes=normalized_quotes,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -1559,6 +1696,7 @@ async def hold(
         valence=final_valence,
         arousal=final_arousal,
         name=suggested_name,
+        quotes=normalized_quotes,
     )
 
     action = "合并→" if is_merged else "新建→"
@@ -1569,13 +1707,8 @@ async def hold(
 # Tool 3: grow — Grow, fragments become memories
 # 工具 3：grow — 生长，一天的碎片长成记忆
 # =============================================================
-@mcp.tool()
-async def grow(content: str) -> str:
-    """日记归档,自动拆分为多桶。短内容(<30字)走快速路径。"""
-    await decay_engine.ensure_started()
-
-    if not content or not content.strip():
-        return "内容为空，无法整理。"
+async def _grow_once(content: str) -> str:
+    """Execute one validated grow operation without retry coordination."""
 
     # --- Short content fast path: skip digest, use hold logic directly ---
     # --- 短内容快速路径：跳过 digest 拆分，直接走 hold 逻辑省一次 API ---
@@ -1646,6 +1779,17 @@ async def grow(content: str) -> str:
             results.append(f"⚠️{item.get('name', '?')}")
 
     return f"{len(items)}条|新{created}合{merged}\n" + "\n".join(results)
+
+
+@mcp.tool()
+async def grow(content: str) -> str:
+    """日记归档,自动拆分为多桶。短内容(<30字)走快速路径；相同内容短时重试不会重复写入。"""
+    await decay_engine.ensure_started()
+    if not content or not content.strip():
+        return "内容为空，无法整理。"
+
+    fingerprint = grow_request_fingerprint(content)
+    return await run_grow_once(fingerprint, lambda: _grow_once(content))
 
 
 # =============================================================
@@ -2962,6 +3106,7 @@ async def api_remember(request):
             arousal=float(body.get("arousal") if body.get("arousal") is not None else -1),
             tags=str(body.get("tags") or ""),
             source_bucket=str(body.get("source_bucket") or ""),
+            quotes=body.get("quotes"),
         )
         return JSONResponse({"id": result})
     except Exception as e:
@@ -2991,7 +3136,9 @@ async def api_system_status(request):
                 "total": stats.get("permanent_count", 0) + stats.get("dynamic_count", 0),
             },
             "using_env_password": bool(os.environ.get("OMBRE_DASHBOARD_PASSWORD", "")),
-            "version": "1.3.0",
+            # Local dual-Ombre line: selected, compatibility-reviewed v3.2
+            # backports rather than a misleading claim of full upstream parity.
+            "version": "1.4.0-dual",
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)

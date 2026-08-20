@@ -33,12 +33,13 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import frontmatter
 from rapidfuzz import fuzz
 
 from utils import generate_bucket_id, sanitize_name, safe_path, now_iso
+from quote_store import merge_quotes, normalize_quotes
 
 logger = logging.getLogger("ombre_brain.bucket")
 
@@ -136,6 +137,7 @@ class BucketManager:
         pinned: bool = False,
         protected: bool = False,
         aspect: str = "",
+        quotes: Any = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -190,6 +192,8 @@ class BucketManager:
         if bucket_type == "i":
             metadata["dont_surface"] = True
             metadata["aspect"] = aspect.strip()
+        if quotes:
+            metadata["quotes"] = normalize_quotes(quotes)
 
         # --- Assemble Markdown file (frontmatter + body) ---
         # --- 组装 Markdown 文件 ---
@@ -282,6 +286,10 @@ class BucketManager:
         Update bucket content or metadata fields.
         更新桶的内容或元数据字段。
         """
+        if "quotes_append" in kwargs:
+            # Validate the current request before touching the stored bucket.
+            kwargs["quotes_append"] = normalize_quotes(kwargs["quotes_append"])
+
         file_path = self._find_bucket_file(bucket_id)
         if not file_path:
             return False
@@ -325,6 +333,19 @@ class BucketManager:
             post["anchor"] = bool(kwargs["anchor"])
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
+        if kwargs.get("quotes_append"):
+            merged_quotes, dropped = merge_quotes(
+                post.metadata.get("quotes"), kwargs["quotes_append"]
+            )
+            if merged_quotes:
+                post["quotes"] = merged_quotes
+            if dropped:
+                logger.warning(
+                    "Quote cap reached while merging bucket %s; kept earliest %s and dropped %s",
+                    bucket_id,
+                    len(merged_quotes),
+                    dropped,
+                )
 
         # --- Auto-refresh activation time / 自动刷新激活时间 ---
         post["last_active"] = now_iso()

@@ -139,7 +139,12 @@ class EmbeddingEngine:
                 return None
         return None
 
-    async def search_similar(self, query: str, top_k: int = 10) -> list[tuple[str, float]]:
+    async def search_similar(
+        self,
+        query: str,
+        top_k: int = 10,
+        allowed_bucket_ids: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
         """
         Search for buckets similar to query text.
         Returns list of (bucket_id, similarity_score) sorted by score desc.
@@ -160,6 +165,10 @@ class EmbeddingEngine:
         conn = sqlite3.connect(self.db_path)
         rows = conn.execute("SELECT bucket_id, embedding FROM embeddings").fetchall()
         conn.close()
+
+        if allowed_bucket_ids is not None:
+            allowed = {str(bucket_id) for bucket_id in allowed_bucket_ids}
+            rows = [row for row in rows if str(row[0]) in allowed]
 
         if not rows:
             return []
