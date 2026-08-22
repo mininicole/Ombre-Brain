@@ -215,7 +215,80 @@ def _handoff_validation_error(exc: ValueError) -> str:
     )
 
 
+_GROUP_SAFE_MEMORY_DOMAIN = "tg-gale-group-safe-v1"
+
+
+async def _set_group_safe_visibility(bucket_id: str, shared: bool) -> dict:
+    """Add/remove the reserved group-safe domain without replacing other domains."""
+    clean_id = str(bucket_id or "").strip()
+    if not clean_id:
+        raise ValueError("bucket_id is required")
+    if not isinstance(shared, bool):
+        raise ValueError("shared must be a boolean")
+    bucket = await bucket_mgr.get(clean_id)
+    if not bucket:
+        return {"updated": False, "bucket_id": clean_id, "reason": "missing"}
+    domains = bucket.get("metadata", {}).get("domain") or []
+    if isinstance(domains, str):
+        domains = [domains]
+    domains = [str(value).strip() for value in domains if str(value).strip()]
+    without_marker = [
+        value
+        for value in domains
+        if value.lower() != _GROUP_SAFE_MEMORY_DOMAIN.lower()
+    ]
+    updated_domains = (
+        [*without_marker, _GROUP_SAFE_MEMORY_DOMAIN]
+        if shared
+        else without_marker
+    )
+    if updated_domains == domains:
+        return {
+            "updated": False,
+            "bucket_id": clean_id,
+            "shared": shared,
+            "domains": domains,
+            "reason": "unchanged",
+        }
+    if not await bucket_mgr.update(clean_id, domain=updated_domains):
+        raise RuntimeError("bucket update failed")
+    return {
+        "updated": True,
+        "bucket_id": clean_id,
+        "shared": shared,
+        "domains": updated_domains,
+    }
+
+
 if _HANDOFF_AGENT_IDS:
+
+    @mcp.tool()
+    async def group_safe_mark(bucket_id: str, shared: bool = True) -> str:
+        """Allow or revoke one Gale memory in the Telegram big group.
+
+        Call this only after the user explicitly says that a specific memory may
+        be known in the big group. Other domains and the bucket content are
+        preserved. The big group itself remains read-only.
+        """
+        try:
+            return _handoff_json(
+                await _set_group_safe_visibility(bucket_id, shared)
+            )
+        except ValueError as exc:
+            return _handoff_validation_error(exc)
+        except Exception:
+            logger.exception(
+                "group_safe_mark failed for bucket_id=%r shared=%r",
+                bucket_id,
+                shared,
+            )
+            return _handoff_json(
+                {
+                    "updated": False,
+                    "error": "storage_error",
+                    "bucket_id": str(bucket_id or ""),
+                }
+            )
 
     @mcp.tool()
     async def handoff_read(agent_id: str) -> str:
@@ -1665,6 +1738,17 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
     q_valence = valence if 0 <= valence <= 1 else None
     q_arousal = arousal if 0 <= arousal <= 1 else None
 
+    def _matches_search_domain(bucket: dict) -> bool:
+        """Keep every search supplement inside the caller's domain boundary."""
+        if not domain_filter:
+            return True
+        bucket_domains = bucket.get("metadata", {}).get("domain") or []
+        if isinstance(bucket_domains, str):
+            bucket_domains = [bucket_domains]
+        expected = {str(value).lower() for value in domain_filter}
+        actual = {str(value).lower() for value in bucket_domains}
+        return bool(actual & expected)
+
     # --- Pinned buckets always surface in search mode too ---
     # 1077 行排除 pinned 时假设浮现模式能补回来，但 /api/recall 永远走 query 分支，
     # 钉桶就再也出不来。这里独立加载并严格按 domain 隔离：
@@ -1675,15 +1759,11 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
     pinned_token_used = 0
     try:
         all_buckets_for_pinned = await bucket_mgr.list_all(include_archive=False)
-        target_set = set(domain_filter) if domain_filter else set()
         for b in all_buckets_for_pinned:
             meta = b["metadata"]
             if not (meta.get("pinned") or meta.get("protected")):
                 continue
-            bucket_doms = meta.get("domain") or []
-            if isinstance(bucket_doms, str):
-                bucket_doms = [bucket_doms]
-            if target_set and not (set(bucket_doms) & target_set):
+            if not _matches_search_domain(b):
                 continue
             try:
                 clean_meta = _summary_metadata(meta)
@@ -1727,7 +1807,14 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
         for bucket_id, sim_score in vector_results:
             if bucket_id not in matched_ids and sim_score > 0.5:
                 bucket = await bucket_mgr.get(bucket_id)
-                if bucket and not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
+                if (
+                    bucket
+                    and _matches_search_domain(bucket)
+                    and not (
+                        bucket["metadata"].get("pinned")
+                        or bucket["metadata"].get("protected")
+                    )
+                ):
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
                     matches.append(bucket)
@@ -1789,10 +1876,9 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
         try:
             all_buckets_recent = await bucket_mgr.list_all(include_archive=False)
             if domain_filter:
-                target_set_r = {d.lower() for d in domain_filter}
                 all_buckets_recent = [
                     b for b in all_buckets_recent
-                    if {str(d).lower() for d in (b["metadata"].get("domain") or ([b["metadata"].get("domain")] if isinstance(b["metadata"].get("domain"), str) else []))} & target_set_r
+                    if _matches_search_domain(b)
                 ]
             matched_ids_now = {b["id"] for b in matches}
             recent_pool = [
@@ -1837,6 +1923,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
             low_weight = [
                 b for b in all_buckets
                 if b["id"] not in matched_ids
+                and _matches_search_domain(b)
                 and not b["metadata"].get("anchor", False)  # anchor 只在真命中时返回
                 and not b["metadata"].get("pinned", False)
                 and not b["metadata"].get("protected", False)

@@ -612,6 +612,90 @@ async def test_breath_honors_max_results(monkeypatch, server_module):
 
 
 @pytest.mark.asyncio
+async def test_breath_domain_boundary_covers_vector_and_random_supplements(
+    monkeypatch, server_module
+):
+    safe = {
+        "id": "group-safe",
+        "metadata": {"domain": ["tg-gale-group-safe-v1"]},
+        "content": "群里可以知道的共同梗",
+    }
+    private = {
+        "id": "private-memory",
+        "metadata": {"domain": ["恋爱"], "created": "2026-08-01T00:00:00Z"},
+        "content": "绝不能进入大群上下文的私密内容",
+    }
+    monkeypatch.setattr(
+        server_module.bucket_mgr,
+        "search",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        server_module.bucket_mgr,
+        "list_all",
+        AsyncMock(side_effect=[[], [private]]),
+    )
+    monkeypatch.setattr(
+        server_module.bucket_mgr,
+        "get",
+        AsyncMock(side_effect=lambda bucket_id: {
+            "group-safe": safe,
+            "private-memory": private,
+        }[bucket_id]),
+    )
+    monkeypatch.setattr(
+        server_module.embedding_engine,
+        "search_similar",
+        AsyncMock(return_value=[("private-memory", 0.99), ("group-safe", 0.90)]),
+    )
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "dehydrate",
+        AsyncMock(side_effect=lambda content, _meta: content),
+    )
+    monkeypatch.setattr(server_module.bucket_mgr, "touch", AsyncMock(return_value=True))
+    monkeypatch.setattr(server_module.decay_engine, "calculate_score", lambda _meta: 1.0)
+    monkeypatch.setattr(server_module.random, "random", lambda: 0.0)
+
+    result = await server_module.breath(
+        query="共同经历",
+        domain="tg-gale-group-safe-v1",
+        max_results=3,
+        max_tokens=1200,
+        include_recent=0,
+    )
+
+    assert "[bucket_id:group-safe]" in result
+    assert "private-memory" not in result
+    assert "绝不能进入大群上下文" not in result
+
+
+@pytest.mark.asyncio
+async def test_group_safe_visibility_preserves_existing_domains(
+    monkeypatch, server_module
+):
+    get_bucket = AsyncMock(return_value={
+        "id": "shared-memory",
+        "metadata": {"domain": ["旅行", "共同经历"]},
+        "content": "群里可以知道的旅行",
+    })
+    update_bucket = AsyncMock(return_value=True)
+    monkeypatch.setattr(server_module.bucket_mgr, "get", get_bucket)
+    monkeypatch.setattr(server_module.bucket_mgr, "update", update_bucket)
+
+    shared = await server_module._set_group_safe_visibility(
+        "shared-memory", True
+    )
+
+    assert shared["updated"] is True
+    assert shared["shared"] is True
+    update_bucket.assert_awaited_once_with(
+        "shared-memory",
+        domain=["旅行", "共同经历", "tg-gale-group-safe-v1"],
+    )
+
+
+@pytest.mark.asyncio
 async def test_breath_counts_pinned_buckets_against_token_budget(monkeypatch, server_module):
     pinned = {
         "id": "pinned-core",
