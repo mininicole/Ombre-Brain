@@ -63,6 +63,7 @@ from schedule_routes import normalize_schedule_route, schedule_delivery_target
 from grow_retry_guard import request_fingerprint as grow_request_fingerprint
 from grow_retry_guard import run_once as run_grow_once
 from quote_store import normalize_quotes, quotes_from_metadata, render_quotes
+from handoff_store import HandoffStore
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -116,6 +117,28 @@ bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket 
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
+
+# Handoff is opt-in per process.  The shared Fly image starts separate Evan and
+# Gale Ombre processes, so only the process with an explicit agent allow-list
+# registers these tools or creates the handoffs table.
+_HANDOFF_AGENT_IDS = frozenset(
+    agent.strip().lower()
+    for agent in os.environ.get("OMBRE_HANDOFF_AGENT_IDS", "").split(",")
+    if agent.strip()
+)
+handoff_store = None
+if _HANDOFF_AGENT_IDS:
+    try:
+        handoff_store = HandoffStore(embedding_engine.db_path, _HANDOFF_AGENT_IDS)
+    except Exception:
+        # Handoff is optional runtime context. A broken/locked handoff table must
+        # never prevent the Ombre MCP process and the main conversation from booting.
+        logger.exception("Handoff initialization failed; continuing without storage")
+    else:
+        logger.info(
+            "Handoff enabled for agents: %s",
+            ", ".join(sorted(_HANDOFF_AGENT_IDS)),
+        )
 
 
 def _summary_metadata(metadata: dict) -> dict:
@@ -176,6 +199,147 @@ mcp = FastMCP(
     host="0.0.0.0",
     port=OMBRE_PORT,
 )
+
+
+def _handoff_json(payload: dict) -> str:
+    return _json_lib.dumps(payload, ensure_ascii=False)
+
+
+def _handoff_validation_error(exc: ValueError) -> str:
+    return _handoff_json(
+        {
+            "ok": False,
+            "error": "validation_error",
+            "message": str(exc),
+        }
+    )
+
+
+if _HANDOFF_AGENT_IDS:
+
+    @mcp.tool()
+    async def handoff_read(agent_id: str) -> str:
+        """Return the agent's current effective handoff.
+
+        Only active, pending, or blocked records that have not expired are
+        returned. Missing, expired, stale, done, and dropped records produce a
+        small empty state. Read failures are logged and degrade to an empty state
+        so they never block the main conversation.
+        """
+        try:
+            return _handoff_json(handoff_store.read(agent_id))
+        except ValueError as exc:
+            return _handoff_validation_error(exc)
+        except Exception:
+            logger.exception("handoff_read failed for agent_id=%r", agent_id)
+            return _handoff_json(
+                {
+                    "active": False,
+                    "agent_id": str(agent_id or ""),
+                    "reason": "read_failed",
+                    "handoff": None,
+                }
+            )
+
+
+    @mcp.tool()
+    async def handoff_update(
+        agent_id: str,
+        current_topic: str | None = None,
+        active_goal: str | None = None,
+        current_state: str | None = None,
+        unresolved: list[str] | None = None,
+        recent_decisions: list[str] | None = None,
+        current_scene: str | None = None,
+        last_meaningful_user_intent: str | None = None,
+        status: str | None = None,
+        expires_at: str | None = None,
+    ) -> str:
+        """Partially update one compact handoff and refresh updated_at.
+
+        Omitted fields are preserved. Empty strings clear text fields, empty
+        lists clear list fields, and expires_at="" clears the expiry. Status is
+        one of active, pending, blocked, stale, done, or dropped. This tool never
+        writes to Ombre memory buckets.
+        """
+        try:
+            return _handoff_json(
+                handoff_store.update(
+                    agent_id,
+                    current_topic=current_topic,
+                    active_goal=active_goal,
+                    current_state=current_state,
+                    unresolved=unresolved,
+                    recent_decisions=recent_decisions,
+                    current_scene=current_scene,
+                    last_meaningful_user_intent=last_meaningful_user_intent,
+                    status=status,
+                    expires_at=expires_at,
+                )
+            )
+        except ValueError as exc:
+            return _handoff_validation_error(exc)
+        except Exception:
+            logger.exception("handoff_update failed for agent_id=%r", agent_id)
+            return _handoff_json(
+                {"updated": False, "error": "storage_error", "agent_id": agent_id}
+            )
+
+
+    @mcp.tool()
+    async def handoff_complete(agent_id: str, item: str = "") -> str:
+        """Complete one unresolved item, or the whole current handoff.
+
+        When item is non-empty it must exactly match an unresolved entry and is
+        removed from that list. When item is empty, the handoff status becomes
+        done and it is no longer returned as the active handoff.
+        """
+        try:
+            return _handoff_json(handoff_store.complete(agent_id, item))
+        except ValueError as exc:
+            return _handoff_validation_error(exc)
+        except Exception:
+            logger.exception("handoff_complete failed for agent_id=%r", agent_id)
+            return _handoff_json(
+                {"completed": False, "error": "storage_error", "agent_id": agent_id}
+            )
+
+
+    @mcp.tool()
+    async def handoff_clear(agent_id: str) -> str:
+        """Explicitly delete the agent's current handoff record."""
+        try:
+            return _handoff_json(handoff_store.clear(agent_id))
+        except ValueError as exc:
+            return _handoff_validation_error(exc)
+        except Exception:
+            logger.exception("handoff_clear failed for agent_id=%r", agent_id)
+            return _handoff_json(
+                {"cleared": False, "error": "storage_error", "agent_id": agent_id}
+            )
+
+
+    @mcp.tool()
+    async def handoff_expire_stale(
+        agent_id: str,
+        stale_after_seconds: int,
+    ) -> str:
+        """Mark an old active or pending handoff stale without deleting it.
+
+        The age is measured from updated_at. Blocked, done, dropped, and already
+        stale records are not changed.
+        """
+        try:
+            return _handoff_json(
+                handoff_store.expire_stale(agent_id, stale_after_seconds)
+            )
+        except ValueError as exc:
+            return _handoff_validation_error(exc)
+        except Exception:
+            logger.exception("handoff_expire_stale failed for agent_id=%r", agent_id)
+            return _handoff_json(
+                {"staled": False, "error": "storage_error", "agent_id": agent_id}
+            )
 
 
 # Guardian's official-client context bridge.  This is deliberately stored next

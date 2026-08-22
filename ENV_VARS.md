@@ -15,11 +15,13 @@
 | `OMBRE_MODEL` | 否 | — | `OMBRE_DEHYDRATION_MODEL` 的别名（前者优先） |
 | `OMBRE_EMBEDDING_MODEL` | 否 | `gemini-embedding-001` | 向量嵌入模型名（覆盖 `embedding.model`） |
 | `OMBRE_EMBEDDING_BASE_URL` | 否 | — | 向量嵌入的 API Base URL（覆盖 `embedding.base_url`；留空则复用脱水配置） |
+| `OMBRE_HANDOFF_AGENT_IDS` | 否 | — | 逗号分隔的 Handoff agent allow-list；留空时不注册 Handoff tools，也不初始化表。当前仅在 Gale 子进程设为 `gale` |
 
 ## 说明
 
 - `OMBRE_API_KEY` 也可在 `config.yaml` 的 `dehydration.api_key` / `embedding.api_key` 中设置，但**强烈建议**通过环境变量传入，避免密钥写入文件。
 - `OMBRE_DASHBOARD_PASSWORD` 设置后，Dashboard 的"修改密码"功能将被禁用（显示提示，建议直接修改环境变量）。未设置则密码存储在 `{buckets_dir}/.dashboard_auth.json`（SHA-256 + salt）。
+- Handoff 使用 `{buckets_dir}/embeddings.db` 中独立的 `handoffs` 表，不进入 Ombre memory buckets。`start.sh` 只在 Gale 的 8790 子进程启用它，因此 Evan 的 MCP 工具面保持不变。
 
 ## Webhook 推送格式 (`OMBRE_HOOK_URL`)
 
