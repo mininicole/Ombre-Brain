@@ -342,6 +342,102 @@ if _HANDOFF_AGENT_IDS:
             )
 
 
+    @mcp.custom_route("/api/handoff", methods=["GET", "POST"])
+    async def api_handoff(request):
+        """REST wrapper for trusted non-MCP clients such as Gale's TG bot."""
+        from starlette.responses import JSONResponse
+
+        action = "read" if request.method == "GET" else "update"
+        body = {}
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except (TypeError, ValueError):
+                return JSONResponse(
+                    {"ok": False, "error": "invalid_json"}, status_code=400
+                )
+            if not isinstance(body, dict):
+                return JSONResponse(
+                    {"ok": False, "error": "body_must_be_object"}, status_code=400
+                )
+            action = str(body.get("action") or "update").strip().lower()
+
+        agent_id = str(
+            body.get("agent_id")
+            or request.query_params.get("agent_id")
+            or ""
+        )
+        try:
+            if handoff_store is None:
+                raise RuntimeError("handoff storage unavailable")
+            if action == "read":
+                payload = handoff_store.read(agent_id)
+            elif action == "update":
+                payload = handoff_store.update(
+                    agent_id,
+                    current_topic=body.get("current_topic"),
+                    active_goal=body.get("active_goal"),
+                    current_state=body.get("current_state"),
+                    unresolved=body.get("unresolved"),
+                    recent_decisions=body.get("recent_decisions"),
+                    current_scene=body.get("current_scene"),
+                    last_meaningful_user_intent=body.get(
+                        "last_meaningful_user_intent"
+                    ),
+                    status=body.get("status"),
+                    expires_at=body.get("expires_at"),
+                )
+            elif action == "complete":
+                payload = handoff_store.complete(
+                    agent_id, str(body.get("item") or "")
+                )
+            elif action == "clear":
+                payload = handoff_store.clear(agent_id)
+            elif action == "expire_stale":
+                payload = handoff_store.expire_stale(
+                    agent_id, body.get("stale_after_seconds")
+                )
+            else:
+                raise ValueError(
+                    "action must be read, update, complete, clear, or expire_stale"
+                )
+        except ValueError as exc:
+            response = JSONResponse(
+                {
+                    "ok": False,
+                    "error": "validation_error",
+                    "message": str(exc),
+                },
+                status_code=400,
+            )
+        except Exception:
+            logger.exception(
+                "api_handoff failed for action=%r agent_id=%r", action, agent_id
+            )
+            if action == "read":
+                response = JSONResponse(
+                    {
+                        "active": False,
+                        "agent_id": agent_id,
+                        "reason": "read_failed",
+                        "handoff": None,
+                    }
+                )
+            else:
+                response = JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "storage_error",
+                        "agent_id": agent_id,
+                    },
+                    status_code=503,
+                )
+        else:
+            response = JSONResponse(payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
 # Guardian's official-client context bridge.  This is deliberately stored next
 # to, not inside, the memory buckets so breath/search/dream and the Dashboard can
 # never surface it as long-term memory.
@@ -4133,11 +4229,11 @@ async def api_generate_gale_dream(request):
 
 
 # --- Gale REST API 反代：给 gale-bot 这类无头脚本用（走同一 slug，不同前缀）---
-# /g-<slug>/api/recall + /api/remember → 127.0.0.1:8790 的对应 endpoint。
-# 白名单只放 recall/remember，其他一律 404——不给任何"顺手扫别的 endpoint"的机会。
+# /g-<slug>/api/<allowed> → 127.0.0.1:8790 的对应 endpoint。
+# 白名单只放 Gale 无头客户端需要的接口，其他一律 404——不给任何"顺手扫别的 endpoint"的机会。
 # 与 gale_mcp_proxy 复用同一 httpx client（同 base_url 8790）+ 同一 header 清洗。
 # CF Access 只罩 /gale-dash/*，本前缀 /g-<slug>/* 免过 SSO，无头脚本可直连。
-_GALE_API_ALLOWED = {"recall", "remember", "presence"}
+_GALE_API_ALLOWED = {"recall", "remember", "presence", "handoff"}
 
 
 async def gale_api_proxy(request):
