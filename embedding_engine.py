@@ -28,7 +28,7 @@ class EmbeddingEngine:
     向量生成 + SQLite 向量存储 + 余弦搜索。
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, *, initialize_db: bool = True):
         dehy_cfg = config.get("dehydration", {})
         embed_cfg = config.get("embedding", {})
 
@@ -56,7 +56,9 @@ class EmbeddingEngine:
             self.client = None
 
         # --- Initialize SQLite ---
-        self._init_db()
+        # A fully frozen process must not even run idempotent DDL at startup.
+        if initialize_db:
+            self._init_db()
 
     def _init_db(self):
         """Create embeddings table if not exists."""

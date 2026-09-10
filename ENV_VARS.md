@@ -16,6 +16,8 @@
 | `OMBRE_EMBEDDING_MODEL` | 否 | `gemini-embedding-001` | 向量嵌入模型名（覆盖 `embedding.model`） |
 | `OMBRE_EMBEDDING_BASE_URL` | 否 | — | 向量嵌入的 API Base URL（覆盖 `embedding.base_url`；留空则复用脱水配置） |
 | `OMBRE_HANDOFF_AGENT_IDS` | 否 | — | 逗号分隔的 Handoff agent allow-list；留空时不注册 Handoff tools，也不初始化表。当前仅在 Gale 子进程设为 `gale` |
+| `OMBRE_FREEZE_ALL` | 否 | `0` | 设为 `1/true/yes/on` 时，本进程除无副作用 `/health` 外拒绝全部读写请求 |
+| `OMBRE_FREEZE_ALL_SENTINEL` | 否 | — | 指向存在的 sentinel 文件时动态启用同样的全冻结；删除文件可解除，不需要重启进程 |
 
 ## 说明
 

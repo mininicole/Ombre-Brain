@@ -19,9 +19,12 @@ python /app/ombre_nightfall_launcher.py &
 OMBRE_PID=$!
 
 echo "[start] launching Gale memory process on localhost:8790 (with Night-Fall @ 21 UTC / 5am 北京)"
+GALE_FREEZE_SENTINEL=/app/buckets/gale/.migration-freeze-all
+install -m 0600 /dev/null "$GALE_FREEZE_SENTINEL"
 OMBRE_BUCKETS_DIR=/app/buckets/gale \
 OMBRE_PORT=8790 \
 OMBRE_HOST=127.0.0.1 \
+OMBRE_FREEZE_ALL_SENTINEL="$GALE_FREEZE_SENTINEL" \
 OMBRE_AUTH_TOKEN="" \
 GALE_MCP_SLUG="" \
 OMBRE_HANDOFF_AGENT_IDS=gale \

@@ -24,6 +24,10 @@ def main() -> None:
         del host
         kwargs.pop("access_log", None)
         app = ombre_server.install_gale_dash_guard(app)
+        # Night-Fall owns the cloud ASGI launch path, so install the process
+        # freeze here too. It remains a no-op for Evan because only Gale gets
+        # the sentinel environment variable.
+        app = ombre_server.install_freeze_all_guard(app)
         return upstream_uvicorn_run(
             app,
             host=os.environ.get("OMBRE_HOST", "0.0.0.0"),

@@ -64,6 +64,11 @@ from grow_retry_guard import request_fingerprint as grow_request_fingerprint
 from grow_retry_guard import run_once as run_grow_once
 from quote_store import normalize_quotes, quotes_from_metadata, render_quotes
 from handoff_store import HandoffStore
+from freeze_guard import (
+    freeze_all_enabled,
+    frozen_health_payload,
+    install_freeze_all_guard,
+)
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -112,7 +117,11 @@ async def _fire_webhook(event: str, payload: dict) -> None:
         logger.warning(f"Webhook push failed ({event} → {OMBRE_HOOK_URL}): {e}")
 
 # --- Initialize core components / 初始化核心组件 ---
-embedding_engine = EmbeddingEngine(config)            # Embedding engine first (BucketManager depends on it)
+_FREEZE_ALL_AT_BOOT = freeze_all_enabled()
+embedding_engine = EmbeddingEngine(
+    config,
+    initialize_db=not _FREEZE_ALL_AT_BOOT,
+)                                                    # Embedding engine first (BucketManager depends on it)
 bucket_mgr = BucketManager(config, embedding_engine=embedding_engine)  # Bucket manager / 记忆桶管理器
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
@@ -127,7 +136,7 @@ _HANDOFF_AGENT_IDS = frozenset(
     if agent.strip()
 )
 handoff_store = None
-if _HANDOFF_AGENT_IDS:
+if _HANDOFF_AGENT_IDS and not _FREEZE_ALL_AT_BOOT:
     try:
         handoff_store = HandoffStore(embedding_engine.db_path, _HANDOFF_AGENT_IDS)
     except Exception:
@@ -849,6 +858,8 @@ async def root_home(request):
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import JSONResponse
+    if freeze_all_enabled():
+        return JSONResponse(frozen_health_payload())
     # 定时消息派发器搭车心跳（Night-Fall keepalive 每 60s 打一次 /health）
     asyncio.create_task(_maybe_dispatch_scheduled())
     try:
@@ -5053,6 +5064,9 @@ if __name__ == "__main__":
         # Apply auth middleware after CORS so preflight requests pass through
         # 鉴权中间件加在 CORS 之后，让 OPTIONS 预检请求能通过
         _app.add_middleware(BearerAuthMiddleware)
+        # A process-scoped full freeze rejects every memory read/write route.
+        # /health remains available but returns before schedule or bucket access.
+        _app = install_freeze_all_guard(_app)
         # Wrap last so Gale Dashboard rejections happen before CORS preflight handling.
         _app = install_gale_dash_guard(_app)
         if OMBRE_AUTH_TOKEN:
