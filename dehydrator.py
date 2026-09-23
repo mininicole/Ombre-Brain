@@ -264,6 +264,13 @@ class Dehydrator:
             raise RuntimeError("脱水 API 不可用，请配置 OMBRE_API_KEY")
 
         result = await self._api_dehydrate(content)
+        # --- Empty summary: fall back to the original text ---
+        # --- 模型偶尔对某些桶返回空白：空白进缓存会被当成未命中，每次 recall
+        #     都重打一遍 API（2026-09-23 拖到 7~10 秒，TG Evan 4 秒超时拿不到记忆）。
+        #     改为缓存原文，之后直接命中 ---
+        if not result.strip():
+            logger.warning("脱水返回空白，改用原文缓存")
+            result = content[:1500]
         # --- Cache the result ---
         self._set_cached_summary(content, result)
         return self._format_output(result, metadata)
