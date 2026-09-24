@@ -1,0 +1,19 @@
+name: Inspect Ombre TLS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Check custom-domain certificate
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl certs check ombre.mininicole.com --app ombre-brain || true
+          flyctl certs setup ombre.mininicole.com --app ombre-brain || true
