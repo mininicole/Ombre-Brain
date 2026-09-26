@@ -1,7 +1,9 @@
 import importlib
+import inspect
 import json
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -61,6 +63,35 @@ def make_request(
         return {"type": "http.request", "body": body, "more_body": False}
 
     return Request(scope, receive)
+
+
+def _time_canary_bucket(
+    bucket_id,
+    content,
+    age_days,
+    *,
+    bucket_type="dynamic",
+    tags=None,
+    memory_lifecycle=None,
+    valid_until=None,
+):
+    created = datetime.now(timezone.utc) - timedelta(days=age_days)
+    metadata = {
+        "id": bucket_id,
+        "created": created.isoformat(),
+        "type": bucket_type,
+        "tags": tags or [],
+        "domain": ["test"],
+    }
+    if memory_lifecycle:
+        metadata["memory_lifecycle"] = memory_lifecycle
+    if valid_until:
+        metadata["valid_until"] = valid_until.isoformat()
+    return {
+        "id": bucket_id,
+        "metadata": metadata,
+        "content": content,
+    }
 
 
 class FakeUpstream:
@@ -520,6 +551,96 @@ async def test_api_remember_forwards_explicit_domain(monkeypatch, server_module)
     assert hold.await_args.kwargs["domain"] == "tg-wonderland"
 
 
+def test_api_remember_has_one_registered_source_definition(server_module):
+    source = inspect.getsource(server_module)
+    assert source.count('@mcp.custom_route("/api/remember"') == 1
+
+
+@pytest.mark.asyncio
+async def test_api_remember_preserves_production_hold_contract(monkeypatch, server_module):
+    hold = AsyncMock(return_value="合并→existing-bucket tg-gale")
+    monkeypatch.setattr(server_module, "hold", hold)
+    request = make_request(
+        "POST",
+        "api/remember",
+        body=json.dumps({
+            "content": "Gale memory",
+            "importance": "7",
+            "feel": True,
+            "pinned": True,
+            "domain": "tg-gale, private",
+            "tags": "亲密, 瞬间",
+            "valence": "0.7",
+            "arousal": 0.6,
+            "source_bucket": "source-1",
+            "quotes": ["short quote"],
+        }).encode("utf-8"),
+    )
+
+    response = await server_module.api_remember(request)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"id": "合并→existing-bucket tg-gale"}
+    hold.assert_awaited_once_with(
+        content="Gale memory",
+        feel=True,
+        importance=7,
+        pinned=True,
+        domain="tg-gale,private",
+        valence=0.7,
+        arousal=0.6,
+        tags="亲密,瞬间",
+        source_bucket="source-1",
+        quotes=["short quote"],
+        memory_lifecycle="",
+        source_timestamp="",
+        valid_until="",
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_remember_accepts_array_tags_and_domains(monkeypatch, server_module):
+    hold = AsyncMock(return_value="新建→array-bucket tg-wonderland")
+    monkeypatch.setattr(server_module, "hold", hold)
+    request = make_request(
+        "POST",
+        "api/remember",
+        body=json.dumps({
+            "content": "Wonderland digest",
+            "domain": ["tg-wonderland", "private"],
+            "tags": ["Wonderland", "群聊总结"],
+        }).encode("utf-8"),
+    )
+
+    response = await server_module.api_remember(request)
+
+    assert response.status_code == 200
+    assert hold.await_args.kwargs["domain"] == "tg-wonderland,private"
+    assert hold.await_args.kwargs["tags"] == "Wonderland,群聊总结"
+    assert hold.await_args.kwargs["valence"] == -1
+    assert hold.await_args.kwargs["arousal"] == -1
+
+
+@pytest.mark.asyncio
+async def test_api_remember_rejects_nested_metadata_without_writing(
+    monkeypatch, server_module
+):
+    hold = AsyncMock()
+    monkeypatch.setattr(server_module, "hold", hold)
+    request = make_request(
+        "POST",
+        "api/remember",
+        body=json.dumps({"content": "bad metadata", "tags": [["nested"]]}).encode(
+            "utf-8"
+        ),
+    )
+
+    response = await server_module.api_remember(request)
+
+    assert response.status_code == 400
+    hold.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_hold_explicit_domain_overrides_auto_classification(
     monkeypatch, server_module
@@ -744,12 +865,18 @@ async def test_breath_reserves_budget_for_two_recent_buckets(monkeypatch, server
     }
     recent_one = {
         "id": "recent-one",
-        "metadata": {"created": "2026-08-11T02:00:00Z"},
+        "metadata": {
+            "created": "2026-09-08T02:00:00Z",
+            "memory_lifecycle": "stable_fact",
+        },
         "content": "最近甲" * 40,
     }
     recent_two = {
         "id": "recent-two",
-        "metadata": {"created": "2026-08-11T01:00:00Z"},
+        "metadata": {
+            "created": "2026-09-08T01:00:00Z",
+            "memory_lifecycle": "stable_fact",
+        },
         "content": "最近乙" * 40,
     }
     monkeypatch.setattr(
@@ -847,3 +974,268 @@ async def test_proxy_returns_404_before_contacting_upstream(
     response = await server_module.gale_dash_proxy(make_request(method, path))
     assert response.status_code == 404
     assert response.body == b"not found"
+
+
+async def _run_time_aware_breath(
+    monkeypatch,
+    server_module,
+    bucket,
+    query,
+    score,
+    *,
+    history_mode=False,
+    current_state_override=False,
+):
+    monkeypatch.setattr(server_module.bucket_mgr, "search", AsyncMock(return_value=[]))
+    monkeypatch.setattr(server_module.bucket_mgr, "list_all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(server_module.bucket_mgr, "get", AsyncMock(return_value=bucket))
+    monkeypatch.setattr(server_module.bucket_mgr, "touch", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        server_module.embedding_engine,
+        "search_similar",
+        AsyncMock(return_value=[(bucket["id"], score)]),
+    )
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "dehydrate",
+        AsyncMock(side_effect=lambda content, _meta: content),
+    )
+    monkeypatch.setattr(server_module.random, "random", lambda: 1.0)
+    return await server_module.breath(
+        query=query,
+        max_results=3,
+        max_tokens=5000,
+        include_recent=0,
+        history_mode=history_mode,
+        current_state_override=current_state_override,
+    )
+
+
+@pytest.mark.asyncio
+async def test_breath_time_canary_old_coffee_is_not_injected(monkeypatch, server_module):
+    bucket = _time_canary_bucket(
+        "coffee-old",
+        "今天买了特调咖啡，正在慢慢喝。",
+        4,
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch, server_module, bucket, "我刚忙完", 0.86
+    )
+
+    assert "coffee-old" not in result
+    assert "特调咖啡" not in result
+
+
+@pytest.mark.asyncio
+async def test_breath_time_canary_current_message_overrides_old_state(
+    monkeypatch, server_module
+):
+    bucket = _time_canary_bucket(
+        "insomnia-old",
+        "昨晚失眠，现在还是很累。",
+        4,
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch, server_module, bucket, "昨晚睡得很好，今天很精神。", 0.93
+    )
+
+    assert "insomnia-old" not in result
+    assert "昨晚失眠" not in result
+
+
+@pytest.mark.asyncio
+async def test_breath_time_canary_old_stable_fact_survives(monkeypatch, server_module):
+    bucket = _time_canary_bucket(
+        "stable-tea",
+        "用户长期喜欢无糖乌龙茶。",
+        184,
+        bucket_type="permanent",
+        tags=["偏好"],
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch, server_module, bucket, "我平时喜欢喝什么？", 0.78
+    )
+
+    assert "[Stable memory]" in result
+    assert "[bucket_id:stable-tea]" in result
+    assert "无糖乌龙茶" in result
+
+
+@pytest.mark.asyncio
+async def test_breath_time_canary_historical_query_reenables_event(
+    monkeypatch, server_module
+):
+    bucket = _time_canary_bucket(
+        "coffee-history",
+        "今天买了榛果特调咖啡。",
+        4,
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch, server_module, bucket, "前几天我买了什么咖啡？", 0.86
+    )
+
+    assert "[Historical memory]" in result
+    assert "[bucket_id:coffee-history]" in result
+    assert "榛果特调咖啡" in result
+    assert "Never present it as a current state" in result
+
+
+@pytest.mark.asyncio
+async def test_breath_time_canary_relative_time_is_anchored(monkeypatch, server_module):
+    bucket = _time_canary_bucket(
+        "relative-history",
+        "昨天去了山里，今晚住在木屋。",
+        8,
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch, server_module, bucket, "上次去山里是什么时候？", 0.82
+    )
+
+    assert "[Historical memory]" in result
+    assert "Recorded:" in result
+    assert "Asia/Shanghai" in result
+    assert "Relative-time words are anchored to Recorded" in result
+
+
+@pytest.mark.asyncio
+async def test_breath_generic_expired_transient_is_filtered_without_content_clues(
+    monkeypatch, server_module
+):
+    bucket = _time_canary_bucket(
+        "opaque-expired",
+        "opaque-payload",
+        3,
+        memory_lifecycle="transient_state",
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch, server_module, bucket, "opaque-query", 0.99
+    )
+
+    assert "opaque-expired" not in result
+    assert "opaque-payload" not in result
+
+
+@pytest.mark.asyncio
+async def test_breath_generic_unexpired_transient_is_only_candidate_context(
+    monkeypatch, server_module
+):
+    bucket = _time_canary_bucket(
+        "opaque-recent",
+        "opaque-payload",
+        0,
+        memory_lifecycle="transient_state",
+        valid_until=datetime.now(timezone.utc) + timedelta(hours=48),
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch, server_module, bucket, "opaque-query", 0.9
+    )
+
+    assert "[Recent reported state]" in result
+    assert "Unexpired does not mean still true" in result
+    assert "discard the recalled state even when it is unexpired" in result
+
+
+@pytest.mark.asyncio
+async def test_breath_generic_current_state_override_filters_unexpired_transient(
+    monkeypatch, server_module
+):
+    bucket = _time_canary_bucket(
+        "opaque-overridden",
+        "opaque-payload",
+        0,
+        memory_lifecycle="transient_state",
+        valid_until=datetime.now(timezone.utc) + timedelta(hours=48),
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch,
+        server_module,
+        bucket,
+        "opaque-current-message",
+        0.99,
+        current_state_override=True,
+    )
+
+    assert "opaque-overridden" not in result
+    assert "opaque-payload" not in result
+
+
+@pytest.mark.asyncio
+async def test_breath_generic_explicit_history_mode_reenables_expired_transient(
+    monkeypatch, server_module
+):
+    bucket = _time_canary_bucket(
+        "opaque-history",
+        "opaque-payload",
+        30,
+        memory_lifecycle="transient_state",
+    )
+    result = await _run_time_aware_breath(
+        monkeypatch,
+        server_module,
+        bucket,
+        "opaque-query-without-history-words",
+        0.9,
+        history_mode=True,
+    )
+
+    assert "[Historical memory]" in result
+    assert "[bucket_id:opaque-history]" in result
+
+
+@pytest.mark.asyncio
+async def test_noquery_surface_filters_expired_transient(monkeypatch, server_module):
+    bucket = _time_canary_bucket(
+        "opaque-surface-expired",
+        "opaque-payload",
+        3,
+        memory_lifecycle="transient_state",
+    )
+    monkeypatch.setattr(server_module.bucket_mgr, "list_all", AsyncMock(return_value=[bucket]))
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "dehydrate",
+        AsyncMock(side_effect=lambda content, _meta: content),
+    )
+    monkeypatch.setattr(server_module.decay_engine, "calculate_score", lambda _meta: 1.0)
+    monkeypatch.setattr(server_module.random, "random", lambda: 1.0)
+
+    result = await server_module.breath(query="", max_results=2, max_tokens=5000)
+
+    assert "opaque-surface-expired" not in result
+    assert "opaque-payload" not in result
+
+
+@pytest.mark.asyncio
+async def test_hold_passes_explicit_temporal_metadata_from_existing_analysis_call(
+    monkeypatch, server_module
+):
+    monkeypatch.setattr(
+        server_module.decay_engine,
+        "ensure_started",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        server_module.dehydrator,
+        "analyze",
+        AsyncMock(return_value={
+            "domain": ["test"],
+            "valence": 0.5,
+            "arousal": 0.5,
+            "tags": [],
+            "suggested_name": "opaque",
+            "memory_lifecycle": "event",
+        }),
+    )
+    monkeypatch.setattr(server_module.bucket_mgr, "search", AsyncMock(return_value=[]))
+    create = AsyncMock(return_value="opaque-id")
+    monkeypatch.setattr(server_module.bucket_mgr, "create", create)
+    monkeypatch.setattr(
+        server_module.embedding_engine,
+        "generate_and_store",
+        AsyncMock(return_value=None),
+    )
+
+    await server_module.hold(content="opaque-payload")
+
+    assert create.await_args.kwargs["memory_lifecycle"] == "event"
+    assert create.await_args.kwargs["source_timestamp"].endswith("+00:00")

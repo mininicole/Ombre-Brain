@@ -16,8 +16,10 @@ import json
 import math
 import sqlite3
 import logging
+from urllib.parse import quote
 
 from openai import AsyncOpenAI
+from runtime_mode import memory_read_only
 
 logger = logging.getLogger("ombre_brain.embedding")
 
@@ -62,6 +64,13 @@ class EmbeddingEngine:
 
     def _init_db(self):
         """Create embeddings table if not exists."""
+        if memory_read_only():
+            conn = self._connect(read_only=True)
+            try:
+                conn.execute("SELECT 1 FROM embeddings LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            return
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.execute("""
@@ -73,6 +82,14 @@ class EmbeddingEngine:
         """)
         conn.commit()
         conn.close()
+
+    def _connect(self, *, read_only: bool = False) -> sqlite3.Connection:
+        if read_only or memory_read_only():
+            uri = f"file:{quote(os.path.abspath(self.db_path))}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+            conn.execute("PRAGMA query_only = ON")
+            return conn
+        return sqlite3.connect(self.db_path)
 
     async def generate_and_store(self, bucket_id: str, content: str) -> bool:
         """
@@ -112,7 +129,7 @@ class EmbeddingEngine:
     def _store_embedding(self, bucket_id: str, embedding: list[float]):
         """Store embedding in SQLite."""
         from utils import now_iso
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute(
             "INSERT OR REPLACE INTO embeddings (bucket_id, embedding, updated_at) VALUES (?, ?, ?)",
             (bucket_id, json.dumps(embedding), now_iso()),
@@ -122,14 +139,14 @@ class EmbeddingEngine:
 
     def delete_embedding(self, bucket_id: str):
         """Remove embedding when bucket is deleted."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         conn.execute("DELETE FROM embeddings WHERE bucket_id = ?", (bucket_id,))
         conn.commit()
         conn.close()
 
     async def get_embedding(self, bucket_id: str) -> list[float] | None:
         """Retrieve stored embedding for a bucket. Returns None if not found."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect(read_only=True)
         row = conn.execute(
             "SELECT embedding FROM embeddings WHERE bucket_id = ?", (bucket_id,)
         ).fetchone()
@@ -164,7 +181,7 @@ class EmbeddingEngine:
             return []
 
         # Load all embeddings from SQLite
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect(read_only=True)
         rows = conn.execute("SELECT bucket_id, embedding FROM embeddings").fetchall()
         conn.close()
 

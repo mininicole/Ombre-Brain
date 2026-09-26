@@ -28,10 +28,12 @@
 import os
 import math
 import logging
+
+from runtime_mode import memory_read_only
 import re
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -42,6 +44,33 @@ from utils import generate_bucket_id, sanitize_name, safe_path, now_iso
 from quote_store import merge_quotes, normalize_quotes
 
 logger = logging.getLogger("ombre_brain.bucket")
+
+_MEMORY_LIFECYCLES = {"stable_fact", "event", "transient_state"}
+_DEFAULT_TRANSIENT_VALID_HOURS = 48
+
+
+def _absolute_timestamp(value: Any = None) -> datetime:
+    """Return an aware timestamp; invalid/missing input becomes current UTC."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text) if text else datetime.now(timezone.utc)
+        except ValueError:
+            parsed = datetime.now(timezone.utc)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_lifecycle(value: Any, *, stable_default: bool = False) -> str:
+    normalized = str(value or "").strip().casefold()
+    if normalized in _MEMORY_LIFECYCLES:
+        return normalized
+    return "stable_fact" if stable_default else "event"
 
 
 def _atomic_write_text(path: str, text: str) -> None:
@@ -138,6 +167,9 @@ class BucketManager:
         protected: bool = False,
         aspect: str = "",
         quotes: Any = None,
+        memory_lifecycle: str = "",
+        source_timestamp: str = "",
+        valid_until: str = "",
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -171,6 +203,12 @@ class BucketManager:
         if pinned or protected:
             importance = 10
 
+        lifecycle = _normalize_lifecycle(
+            memory_lifecycle,
+            stable_default=bool(pinned or protected or bucket_type == "permanent"),
+        )
+        recorded_at = _absolute_timestamp(source_timestamp)
+
         # --- Build YAML frontmatter metadata / 构建元数据 ---
         metadata = {
             "id": bucket_id,
@@ -182,6 +220,8 @@ class BucketManager:
             "importance": max(1, min(10, importance)),
             "type": bucket_type,
             "created": now_iso(),
+            "source_timestamp": recorded_at.isoformat(timespec="seconds"),
+            "memory_lifecycle": lifecycle,
             "last_active": now_iso(),
             "activation_count": 0,
         }
@@ -194,6 +234,13 @@ class BucketManager:
             metadata["aspect"] = aspect.strip()
         if quotes:
             metadata["quotes"] = normalize_quotes(quotes)
+        if lifecycle == "transient_state":
+            expires_at = (
+                _absolute_timestamp(valid_until)
+                if str(valid_until or "").strip()
+                else recorded_at + timedelta(hours=_DEFAULT_TRANSIENT_VALID_HOURS)
+            )
+            metadata["valid_until"] = expires_at.isoformat(timespec="seconds")
 
         # --- Assemble Markdown file (frontmatter + body) ---
         # --- 组装 Markdown 文件 ---
@@ -333,6 +380,31 @@ class BucketManager:
             post["anchor"] = bool(kwargs["anchor"])
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
+        if "memory_lifecycle" in kwargs:
+            lifecycle = _normalize_lifecycle(
+                kwargs["memory_lifecycle"],
+                stable_default=bool(post.get("pinned") or post.get("protected") or post.get("type") == "permanent"),
+            )
+            post["memory_lifecycle"] = lifecycle
+            if lifecycle != "transient_state":
+                post.metadata.pop("valid_until", None)
+        if "source_timestamp" in kwargs:
+            post["source_timestamp"] = _absolute_timestamp(
+                kwargs["source_timestamp"]
+            ).isoformat(timespec="seconds")
+        if "valid_until" in kwargs:
+            raw_valid_until = str(kwargs["valid_until"] or "").strip()
+            if raw_valid_until:
+                post["valid_until"] = _absolute_timestamp(raw_valid_until).isoformat(
+                    timespec="seconds"
+                )
+            elif post.get("memory_lifecycle") == "transient_state":
+                source_time = _absolute_timestamp(post.get("source_timestamp"))
+                post["valid_until"] = (
+                    source_time + timedelta(hours=_DEFAULT_TRANSIENT_VALID_HOURS)
+                ).isoformat(timespec="seconds")
+            else:
+                post.metadata.pop("valid_until", None)
         if kwargs.get("quotes_append"):
             merged_quotes, dropped = merge_quotes(
                 post.metadata.get("quotes"), kwargs["quotes_append"]
@@ -442,6 +514,8 @@ class BucketManager:
         if not file_path:
             return
 
+        if memory_read_only():
+            return
         try:
             post = frontmatter.load(file_path)
             post["last_active"] = now_iso()

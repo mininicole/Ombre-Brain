@@ -24,6 +24,8 @@ import asyncio
 import logging
 from datetime import datetime
 
+from runtime_mode import memory_read_only
+
 logger = logging.getLogger("ombre_brain.decay")
 
 
@@ -275,12 +277,17 @@ class DecayEngine:
         Ensure the decay engine is started (lazy init on first call).
         确保衰减引擎已启动（懒加载，首次调用时启动）。
         """
+        if memory_read_only():
+            return
         if not self._running:
             await self.start()
 
     async def start(self) -> None:
         """Start the background decay loop.
         启动后台衰减循环。"""
+        if memory_read_only():
+            logger.info("Decay engine disabled by OMBRE_READ_ONLY")
+            return
         if self._running:
             return
         self._running = True

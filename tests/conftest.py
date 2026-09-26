@@ -133,6 +133,7 @@ def mock_dehydrator():
             "arousal": 0.5,
             "tags": ["测试"],
             "suggested_name": "测试记忆",
+            "memory_lifecycle": "event",
         }
 
     async def fake_merge(old, new):

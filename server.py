@@ -43,6 +43,7 @@ import secrets
 import time
 import json as _json_lib
 import httpx
+from datetime import datetime, timezone
 from urllib.parse import unquote_to_bytes, urlsplit, urlunsplit
 
 
@@ -68,6 +69,13 @@ from freeze_guard import (
     freeze_all_enabled,
     frozen_health_payload,
     install_freeze_all_guard,
+)
+from oauth_provider import build_oauth_runtime_from_env
+from runtime_mode import memory_read_only
+from recall_time import (
+    evaluate_recall_candidate,
+    format_memory_injection,
+    rerank_recall_candidates,
 )
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
@@ -95,12 +103,54 @@ OMBRE_HOOK_SKIP = os.environ.get("OMBRE_HOOK_SKIP", "").strip().lower() in ("1",
 _night_fall_auto_surface = None
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean environment switch without accepting ambiguous values."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _read_only_tool_result() -> str:
+    return _json_lib.dumps(
+        {"ok": False, "error": "memory_read_only"}, ensure_ascii=False
+    )
+
+
+def _request_bearer_token(request, *, allow_query_token: bool = False) -> str:
+    """Extract a Bearer token; URL query credentials are opt-in legacy behavior."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:].strip()
+    if allow_query_token:
+        return request.query_params.get("token", "").strip()
+    return ""
+
+
+def _request_has_valid_bearer(
+    request,
+    expected_token: str,
+    *,
+    allow_query_token: bool = False,
+) -> bool:
+    """Compare credentials in constant time and fail closed for empty values."""
+    provided = _request_bearer_token(
+        request,
+        allow_query_token=allow_query_token,
+    )
+    return bool(
+        expected_token
+        and provided
+        and hmac.compare_digest(provided, expected_token)
+    )
+
+
 async def _fire_webhook(event: str, payload: dict) -> None:
     """
     Fire-and-forget POST to OMBRE_HOOK_URL with the given event payload.
     Failures are logged at WARNING level only — never propagated to the caller.
     """
-    if OMBRE_HOOK_SKIP or not OMBRE_HOOK_URL:
+    if memory_read_only() or OMBRE_HOOK_SKIP or not OMBRE_HOOK_URL:
         return
     if not OMBRE_HOOK_URL.startswith(("http://", "https://")):
         logger.warning(f"OMBRE_HOOK_URL rejected: only http/https allowed (got {OMBRE_HOOK_URL[:40]!r})")
@@ -202,12 +252,23 @@ breath 返回里如果出现 "=== 浮上来的梦 ===" 块，那不是普通桶�
 除非深深显式说"记一下 / 记入 ombre / 这个要留住"。
 """
 
+_oauth_runtime = build_oauth_runtime_from_env()
+
 mcp = FastMCP(
     "Ombre Brain",
     instructions=OMBRE_INSTRUCTIONS,
     host="0.0.0.0",
     port=OMBRE_PORT,
+    auth_server_provider=_oauth_runtime.provider if _oauth_runtime else None,
+    auth=_oauth_runtime.settings if _oauth_runtime else None,
 )
+
+
+if _oauth_runtime:
+    @mcp.custom_route("/oauth/consent", methods=["GET", "POST"])
+    async def oauth_consent(request):
+        """Render or complete the single-user hosted connector consent step."""
+        return await _oauth_runtime.provider.consent_response(request)
 
 
 def _handoff_json(payload: dict) -> str:
@@ -279,6 +340,8 @@ if _HANDOFF_AGENT_IDS:
         be known in the big group. Other domains and the bucket content are
         preserved. The big group itself remains read-only.
         """
+        if memory_read_only():
+            return _read_only_tool_result()
         try:
             return _handoff_json(
                 await _set_group_safe_visibility(bucket_id, shared)
@@ -344,6 +407,8 @@ if _HANDOFF_AGENT_IDS:
         one of active, pending, blocked, stale, done, or dropped. This tool never
         writes to Ombre memory buckets.
         """
+        if memory_read_only():
+            return _read_only_tool_result()
         try:
             return _handoff_json(
                 handoff_store.update(
@@ -376,6 +441,8 @@ if _HANDOFF_AGENT_IDS:
         removed from that list. When item is empty, the handoff status becomes
         done and it is no longer returned as the active handoff.
         """
+        if memory_read_only():
+            return _read_only_tool_result()
         try:
             return _handoff_json(handoff_store.complete(agent_id, item))
         except ValueError as exc:
@@ -390,6 +457,8 @@ if _HANDOFF_AGENT_IDS:
     @mcp.tool()
     async def handoff_clear(agent_id: str) -> str:
         """Explicitly delete the agent's current handoff record."""
+        if memory_read_only():
+            return _read_only_tool_result()
         try:
             return _handoff_json(handoff_store.clear(agent_id))
         except ValueError as exc:
@@ -411,6 +480,8 @@ if _HANDOFF_AGENT_IDS:
         The age is measured from updated_at. Blocked, done, dropped, and already
         stale records are not changed.
         """
+        if memory_read_only():
+            return _read_only_tool_result()
         try:
             return _handoff_json(
                 handoff_store.expire_stale(agent_id, stale_after_seconds)
@@ -429,6 +500,10 @@ if _HANDOFF_AGENT_IDS:
         """REST wrapper for trusted non-MCP clients such as Gale's TG bot."""
         from starlette.responses import JSONResponse
 
+        if memory_read_only() and request.method != "GET":
+            return JSONResponse(
+                {"ok": False, "error": "memory_read_only"}, status_code=503
+            )
         action = "read" if request.method == "GET" else "update"
         body = {}
         if request.method == "POST":
@@ -544,6 +619,8 @@ async def presence(
         return _json_lib.dumps(
             read_presence(_GUARDIAN_PRESENCE_FILE), ensure_ascii=False
         )
+    if memory_read_only():
+        return _read_only_tool_result()
     if action != "update":
         return "action must be update or read"
     try:
@@ -566,6 +643,10 @@ async def api_presence(request):
     from starlette.responses import JSONResponse
 
     if request.method == "POST":
+        if memory_read_only():
+            return JSONResponse(
+                {"ok": False, "error": "memory_read_only"}, status_code=503
+            )
         try:
             body = await request.json()
             saved = write_presence(
@@ -861,11 +942,13 @@ async def health_check(request):
     if freeze_all_enabled():
         return JSONResponse(frozen_health_payload())
     # 定时消息派发器搭车心跳（Night-Fall keepalive 每 60s 打一次 /health）
-    asyncio.create_task(_maybe_dispatch_scheduled())
+    if not memory_read_only():
+        asyncio.create_task(_maybe_dispatch_scheduled())
     try:
         stats = await bucket_mgr.get_stats()
         return JSONResponse({
             "status": "ok",
+            "memory_read_only": memory_read_only(),
             "buckets": stats["permanent_count"] + stats["dynamic_count"],
             "decay_engine": "running" if decay_engine.is_running else "stopped",
         })
@@ -946,6 +1029,9 @@ async def schedule_message(
     - cancel: 按 message_id 取消一条。
     投递后会自动写进对应 Telegram bot 的对话历史，记忆连续。
     """
+    action = str(action or "schedule").strip().lower()
+    if memory_read_only() and action != "list":
+        return _read_only_tool_result()
     import secrets as _secrets
     from datetime import datetime, timezone, timedelta
     async with _sched_lock:
@@ -1001,6 +1087,10 @@ async def schedule_message(
 @mcp.custom_route("/api/schedule_message", methods=["POST"])
 async def api_schedule_message(request):
     from starlette.responses import JSONResponse
+    if memory_read_only():
+        return JSONResponse(
+            {"ok": False, "error": "memory_read_only"}, status_code=503
+        )
     try:
         body = await request.json()
     except Exception:
@@ -1022,6 +1112,8 @@ async def api_schedule_message(request):
 
 
 async def _maybe_dispatch_scheduled():
+    if memory_read_only():
+        return
     global _sched_last_check
     now = time.time()
     if now - _sched_last_check < 55:
@@ -1175,11 +1267,17 @@ async def api_recall(request):
             domain=domain,
             include_recent=max(0, min(include_recent, 10)),
             quotes=bool(body.get("quotes", False)),
+            history_mode=bool(body.get("history_mode", False)),
+            current_state_override=bool(body.get("current_state_override", False)),
         )
         # Night-Fall auto-surface — query 分支默认不触发，这里手动调一下，
         # 让 REST 客户端也能有"梦自己浮上来"的体验。
         # 共振失败就什么都不发生（梦留着），共振命中就消费一个并 append 到 text。
-        if surface_dreams and _night_fall_auto_surface is not None:
+        if (
+            not memory_read_only()
+            and surface_dreams
+            and _night_fall_auto_surface is not None
+        ):
             try:
                 dream_block = await _night_fall_auto_surface()
                 if dream_block:
@@ -1193,74 +1291,73 @@ async def api_recall(request):
 
 
 # =============================================================
-# /api/remember endpoint — REST wrapper around bucket creation
-# 给非 MCP 客户端（TG bot 通过 <memory> tag 提取后用）入桶
-# POST JSON: {content, importance?, valence?, arousal?, tags?, domain?}
-#   tags / domain 都是逗号分隔字符串
-# Returns: {"id": "bucket_id"}
+# /api/remember endpoint — the single REST wrapper around hold()
+# 给非 MCP 客户端（TG bot / Wonderland / heartbeat）入桶。
+# tags/domain accept either comma-separated strings (the production callers)
+# or JSON string arrays (the newer direct-create route's input shape).
+# The write still goes through hold() so auto-tagging, merge, feel, pinning,
+# source_bucket and quotes keep the semantics used by production today.
 # =============================================================
+
+
+def _remember_csv(value, field: str) -> str:
+    """Normalize a REST CSV-or-array field to hold()'s CSV contract."""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, list):
+        if any(isinstance(item, (dict, list)) for item in value):
+            raise ValueError(f"{field} items must be scalar strings")
+        items = [str(item) for item in value]
+    else:
+        raise ValueError(f"{field} must be a comma-separated string or string array")
+    return ",".join(item.strip() for item in items if item.strip())
+
+
 @mcp.custom_route("/api/remember", methods=["POST"])
 async def api_remember(request):
     from starlette.responses import JSONResponse
+    if memory_read_only():
+        return JSONResponse(
+            {"ok": False, "error": "memory_read_only"}, status_code=503
+        )
     try:
         body = await request.json()
-    except Exception:
+    except (TypeError, ValueError):
         return JSONResponse({"error": "invalid json"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "json body must be an object"}, status_code=400)
     content = str(body.get("content") or "").strip()
     if not content:
         return JSONResponse({"error": "empty content"}, status_code=400)
-    if len(content) > 5000:
-        content = content[:5000]
-    # importance: 1-10
     try:
         importance = int(body.get("importance") or 5)
-    except (TypeError, ValueError):
-        importance = 5
-    importance = max(1, min(10, importance))
-    # valence/arousal: 0-1
-    def _clamp01(x, default):
-        try:
-            v = float(x)
-            if 0 <= v <= 1:
-                return v
-        except (TypeError, ValueError):
-            pass
-        return default
-    valence = _clamp01(body.get("valence"), 0.5)
-    arousal = _clamp01(body.get("arousal"), 0.3)
-    # tags: comma-separated
-    tags_raw = body.get("tags", "")
-    tags = []
-    if isinstance(tags_raw, str):
-        tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
-    elif isinstance(tags_raw, list):
-        tags = [str(t).strip() for t in tags_raw if str(t).strip()]
-    # domain: comma-separated
-    domain_raw = body.get("domain", "")
-    domain = None
-    if isinstance(domain_raw, str) and domain_raw.strip():
-        domain = [d.strip() for d in domain_raw.split(",") if d.strip()]
-    pinned = bool(body.get("pinned", False))
+        valence = float(body.get("valence") if body.get("valence") is not None else -1)
+        arousal = float(body.get("arousal") if body.get("arousal") is not None else -1)
+        tags = _remember_csv(body.get("tags", ""), "tags")
+        domain = _remember_csv(body.get("domain", ""), "domain")
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     try:
-        bucket_id = await bucket_mgr.create(
+        result = await hold(
             content=content,
-            tags=tags,
+            feel=bool(body.get("feel", False)),
             importance=importance,
+            pinned=bool(body.get("pinned", False)),
             domain=domain,
             valence=valence,
             arousal=arousal,
-            pinned=pinned,
+            tags=tags,
+            source_bucket=str(body.get("source_bucket") or ""),
+            quotes=body.get("quotes"),
+            memory_lifecycle=str(body.get("memory_lifecycle") or ""),
+            source_timestamp=str(body.get("source_timestamp") or ""),
+            valid_until=str(body.get("valid_until") or ""),
         )
-        # 后台跑 embedding（如果配置了的话），不阻塞返回
-        try:
-            await embedding_engine.generate_and_store(bucket_id, content)
-        except Exception:
-            pass
-        return JSONResponse({"id": bucket_id})
+        return JSONResponse({"id": result})
     except Exception as e:
-        logger.warning(f"/api/remember failed: {e}")
+        logger.error(f"/api/remember failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -1309,6 +1406,35 @@ async def dream_hook(request):
 # Shared by hold and grow to avoid duplicate logic
 # hold 和 grow 共用，避免重复逻辑
 # =============================================================
+_MEMORY_LIFECYCLES = {"stable_fact", "event", "transient_state"}
+
+
+def _memory_lifecycle_for_write(
+    explicit: str,
+    analysis: dict,
+    *,
+    pinned: bool = False,
+) -> str:
+    """Choose explicit write metadata; fail closed to transient when uncertain."""
+    if pinned:
+        return "stable_fact"
+    requested = str(explicit or "").strip().casefold()
+    if requested in _MEMORY_LIFECYCLES:
+        return requested
+    analyzed = str((analysis or {}).get("memory_lifecycle") or "").strip().casefold()
+    if analyzed in _MEMORY_LIFECYCLES:
+        return analyzed
+    return "transient_state"
+
+
+def _source_timestamp_for_write(value: str = "") -> str:
+    """Preserve an explicit source time or create an absolute UTC timestamp."""
+    raw = str(value or "").strip()
+    if raw:
+        return raw
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 async def _merge_or_create(
     content: str,
     tags: list,
@@ -1318,6 +1444,9 @@ async def _merge_or_create(
     arousal: float,
     name: str = "",
     quotes: list[dict[str, str]] | None = None,
+    memory_lifecycle: str = "event",
+    source_timestamp: str = "",
+    valid_until: str = "",
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -1349,6 +1478,9 @@ async def _merge_or_create(
                     "domain": list(set((bucket["metadata"].get("domain") or []) + domain)),
                     "valence": merged_valence,
                     "arousal": merged_arousal,
+                    "memory_lifecycle": memory_lifecycle,
+                    "source_timestamp": source_timestamp,
+                    "valid_until": valid_until,
                 }
                 if quotes:
                     update_kwargs["quotes_append"] = quotes
@@ -1371,6 +1503,9 @@ async def _merge_or_create(
         arousal=arousal,
         name=name or None,
         quotes=quotes,
+        memory_lifecycle=memory_lifecycle,
+        source_timestamp=source_timestamp,
+        valid_until=valid_until,
     )
     # --- Generate embedding for new bucket ---
     try:
@@ -1511,8 +1646,10 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
     importance_min: int = -1,
     include_recent: int = 0,  # 2026-07-07：search 分支追加 N 条"最近未解决桶"（共享 max_tokens）
     quotes: bool = False,
+    history_mode: bool = False,
+    current_state_override: bool = False,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。max_tokens控制包括钉桶在内的返回总token上限(默认4000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认2,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,优先追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），再填充关键词/向量匹配，共享 max_tokens 预算。quotes=True 仅为本次查询命中的桶附上写入时主动保留的原话；普通浮现绝不返回引语。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。history_mode=True 明确表示用户在询问过去，允许已过期 event/transient 以 Historical memory 返回；False 时仍兼容识别常见历史问法。current_state_override=True 表示当前用户消息已经明确报告新状态，此时所有 recalled transient（包括未过期候选）都不得注入；stable fact/event 不受此闸门影响。max_tokens控制包括钉桶在内的返回总token上限(默认4000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认2,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,优先追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），再填充关键词/向量匹配，共享 max_tokens 预算。quotes=True 仅为本次查询命中的桶附上写入时主动保留的原话；普通浮现绝不返回引语。"""
     await decay_engine.ensure_started()
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
@@ -1585,7 +1722,10 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
             try:
                 clean_meta = _summary_metadata(b["metadata"])
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                line = f"📌 [核心准则] [bucket_id:{b['id']}] {summary}"
+                decision = evaluate_recall_candidate(b, query, 1.0)
+                line = "📌 [核心准则]\n" + format_memory_injection(
+                    b, summary, decision
+                )
                 line_tokens = count_tokens_approx(line)
                 if pinned_token_used + line_tokens > max_tokens:
                     logger.warning(f"Breath pinned budget exhausted before {b['id']}")
@@ -1657,7 +1797,12 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                 clean_meta = _summary_metadata(b["metadata"])
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 score = decay_engine.calculate_score(b["metadata"])
-                line = f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}"
+                decision = evaluate_recall_candidate(b, "", 1.0)
+                if not decision.inject:
+                    continue
+                line = f"[权重:{score:.2f}]\n" + format_memory_injection(
+                    b, summary, decision
+                )
                 line_tokens = count_tokens_approx(line)
                 if line_tokens > token_budget:
                     break
@@ -1696,7 +1841,13 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                         strip_wikilinks(wave["content"]), clean_meta
                     )
                     score = decay_engine.calculate_score(wave["metadata"])
-                    wave_line = f"[权重:{score:.2f}] [bucket_id:{wave['id']}] {wave_summary}"
+                    decision = evaluate_recall_candidate(wave, "", 0.5)
+                    if not decision.inject:
+                        wave_line = ""
+                    else:
+                        wave_line = f"[权重:{score:.2f}]\n" + format_memory_injection(
+                            wave, wave_summary, decision
+                        )
                     wave_tokens = count_tokens_approx(wave_line)
                     if wave_tokens > token_budget:
                         logger.info(f"Brain wave skipped by token budget: {wave['id']}")
@@ -1728,7 +1879,11 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
 
         # --- Night-Fall auto-surface (only when breath carries affect) ---
         is_contextual_noquery = (valence != -1 or arousal != -1)
-        if is_contextual_noquery and _night_fall_auto_surface is not None:
+        if (
+            not memory_read_only()
+            and is_contextual_noquery
+            and _night_fall_auto_surface is not None
+        ):
             try:
                 dream_block = await _night_fall_auto_surface()
                 if dream_block:
@@ -1793,7 +1948,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
         logger.warning(f"search 模式列钉桶失败: {e}")
 
     try:
-        matches = await bucket_mgr.search(
+        lexical_matches = await bucket_mgr.search(
             query,
             limit=max(max_results, 20),
             domain_filter=domain_filter,
@@ -1808,30 +1963,63 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
 
     # --- Exclude pinned/protected from search results (they surface in surfacing mode) ---
     # --- 搜索模式排除钉选桶（它们在浮现模式中始终可见）---
-    matches = [b for b in matches if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))]
+    lexical_matches = [
+        b
+        for b in lexical_matches
+        if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+    ]
 
-    # --- Vector similarity channel: find semantically related buckets ---
-    # --- 向量相似度通道：找到语义相关的桶 ---
-    matched_ids = {b["id"] for b in matches}
+    # --- Required order: semantic top-k → time/state rerank/filter → injection ---
+    # Lexical matches remain a compatibility supplement for exact names/tags,
+    # but can no longer bypass the time/state decision or structured prompt.
+    semantic_matches = []
     try:
         vector_results = await embedding_engine.search_similar(query, top_k=max(max_results, 20))
         for bucket_id, sim_score in vector_results:
-            if bucket_id not in matched_ids and sim_score > 0.5:
-                bucket = await bucket_mgr.get(bucket_id)
-                if (
-                    bucket
-                    and _matches_search_domain(bucket)
-                    and not (
-                        bucket["metadata"].get("pinned")
-                        or bucket["metadata"].get("protected")
-                    )
-                ):
-                    bucket["score"] = round(sim_score * 100, 2)
-                    bucket["vector_match"] = True
-                    matches.append(bucket)
-                    matched_ids.add(bucket_id)
+            if sim_score <= 0.5:
+                continue
+            bucket = await bucket_mgr.get(bucket_id)
+            if (
+                bucket
+                and _matches_search_domain(bucket)
+                and not (
+                    bucket["metadata"].get("pinned")
+                    or bucket["metadata"].get("protected")
+                )
+            ):
+                bucket["semantic_score"] = round(float(sim_score), 6)
+                bucket["vector_match"] = True
+                semantic_matches.append(bucket)
     except Exception as e:
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
+
+    candidate_by_id = {bucket["id"]: bucket for bucket in semantic_matches}
+    for bucket in lexical_matches:
+        # Older callers/tests may omit a numeric score even though bucket_mgr.search
+        # has already established an exact keyword/name/tag match. Preserve that
+        # compatibility path without pretending it came from the embedding model.
+        lexical_score = float(bucket.get("score") or 1.0)
+        if lexical_score > 1.0:
+            lexical_score /= 100.0
+        existing = candidate_by_id.get(bucket["id"])
+        if existing is None:
+            bucket["semantic_score"] = round(lexical_score, 6)
+            bucket["lexical_only"] = True
+            candidate_by_id[bucket["id"]] = bucket
+        else:
+            existing["lexical_score"] = round(lexical_score, 6)
+
+    ranked_matches = rerank_recall_candidates(
+        candidate_by_id.values(),
+        query,
+        history_mode=True if history_mode else None,
+        current_state_override=current_state_override,
+    )
+    matches = []
+    for bucket, decision in ranked_matches:
+        bucket["recall_time_decision"] = decision
+        if decision.inject:
+            matches.append(bucket)
 
     results = []
     token_used = pinned_token_used
@@ -1857,10 +2045,8 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                 shift = (q_valence - 0.5) * 0.2  # ±0.1 max shift
                 clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
             summary = await dehydrator.dehydrate(strip_wikilinks(bucket["content"]), clean_meta)
-            if bucket.get("vector_match"):
-                line = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
-            else:
-                line = f"[bucket_id:{bucket['id']}] {summary}"
+            decision = bucket["recall_time_decision"]
+            line = format_memory_injection(bucket, summary, decision)
             if quotes:
                 quote_block = render_quotes(
                     quotes_from_metadata(bucket.get("metadata", {}))
@@ -1909,7 +2095,18 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                 try:
                     clean_meta = _summary_metadata(b["metadata"])
                     summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                    line = f"[最近] [bucket_id:{b['id']}] {summary}"
+                    decision = evaluate_recall_candidate(
+                        b,
+                        query,
+                        0.5,
+                        history_mode=True if history_mode else None,
+                        current_state_override=current_state_override,
+                    )
+                    if not decision.inject:
+                        continue
+                    line = "[Recent top-up]\n" + format_memory_injection(
+                        b, summary, decision
+                    )
                     line_tokens = count_tokens_approx(line)
                     if token_used + line_tokens > max_tokens:
                         break
@@ -1946,7 +2143,18 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
                 for b in drifted:
                     clean_meta = _summary_metadata(b["metadata"])
                     summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                    line = f"[surface_type: random]\n{summary}"
+                    decision = evaluate_recall_candidate(
+                        b,
+                        query,
+                        0.25,
+                        history_mode=True if history_mode else None,
+                        current_state_override=current_state_override,
+                    )
+                    if not decision.inject:
+                        continue
+                    line = "[surface_type: random]\n" + format_memory_injection(
+                        b, summary, decision
+                    )
                     line_tokens = count_tokens_approx(line)
                     if token_used + line_tokens > max_tokens:
                         break
@@ -1987,8 +2195,13 @@ async def hold(
     valence: float = -1,
     arousal: float = -1,
     quotes: list | None = None,
+    memory_lifecycle: str = "",
+    source_timestamp: str = "",
+    valid_until: str = "",
 ) -> str:
-    """存储单条记忆,自动打标+合并。tags/domain逗号分隔,domain非空时覆盖自动主题。importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。quotes 可主动保留最多3句原话；普通浮现不会返回，只有 breath(query=..., quotes=True) 才会附上。"""
+    """存储单条记忆,自动打标+合并。memory_lifecycle 可显式指定 stable_fact/event/transient_state；普通调用由已有 analyze 步骤写入该字段，无法确定时按 transient_state 保守处理。transient 默认有效 48 小时，也可传绝对 valid_until。source_timestamp 为空时写当前 UTC。tags/domain逗号分隔,domain非空时覆盖自动主题。importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。quotes 可主动保留最多3句原话；普通浮现不会返回，只有 breath(query=..., quotes=True) 才会附上。"""
+    if memory_read_only():
+        return _read_only_tool_result()
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -2044,7 +2257,7 @@ async def hold(
         logger.warning(f"Auto-tagging failed, using defaults / 自动打标失败: {e}")
         analysis = {
             "domain": ["未分类"], "valence": 0.5, "arousal": 0.3,
-            "tags": [], "suggested_name": "",
+            "tags": [], "suggested_name": "", "memory_lifecycle": "transient_state",
         }
 
     requested_domains = [d.strip() for d in str(domain or "").split(",") if d.strip()]
@@ -2053,6 +2266,12 @@ async def hold(
     auto_arousal = analysis["arousal"]
     auto_tags = analysis["tags"]
     suggested_name = analysis.get("suggested_name", "")
+    final_lifecycle = _memory_lifecycle_for_write(
+        memory_lifecycle,
+        analysis,
+        pinned=pinned,
+    )
+    final_source_timestamp = _source_timestamp_for_write(source_timestamp)
 
     # --- User-supplied valence/arousal takes priority over analyze() result ---
     # --- 用户显式传入的 valence/arousal 优先，analyze() 结果作为 fallback ---
@@ -2075,6 +2294,8 @@ async def hold(
             bucket_type="permanent",
             pinned=True,
             quotes=normalized_quotes,
+            memory_lifecycle="stable_fact",
+            source_timestamp=final_source_timestamp,
         )
         try:
             await embedding_engine.generate_and_store(bucket_id, content)
@@ -2092,6 +2313,9 @@ async def hold(
         arousal=final_arousal,
         name=suggested_name,
         quotes=normalized_quotes,
+        memory_lifecycle=final_lifecycle,
+        source_timestamp=final_source_timestamp,
+        valid_until=valid_until,
     )
 
     action = "合并→" if is_merged else "新建→"
@@ -2128,6 +2352,8 @@ async def _grow_once(content: str) -> str:
             valence=analysis.get("valence", 0.5),
             arousal=analysis.get("arousal", 0.3),
             name=analysis.get("suggested_name", ""),
+            memory_lifecycle=_memory_lifecycle_for_write("", analysis),
+            source_timestamp=_source_timestamp_for_write(),
         )
         action = "合并" if is_merged else "新建"
         return f"{action} → {result_name} | {','.join(analysis.get('domain', []))} V{analysis.get('valence', 0.5):.1f}/A{analysis.get('arousal', 0.3):.1f}"
@@ -2158,6 +2384,8 @@ async def _grow_once(content: str) -> str:
                 valence=item.get("valence", 0.5),
                 arousal=item.get("arousal", 0.3),
                 name=item.get("name", ""),
+                memory_lifecycle=_memory_lifecycle_for_write("", item),
+                source_timestamp=_source_timestamp_for_write(),
             )
 
             if is_merged:
@@ -2179,6 +2407,8 @@ async def _grow_once(content: str) -> str:
 @mcp.tool()
 async def grow(content: str) -> str:
     """日记归档,自动拆分为多桶。短内容(<30字)走快速路径；相同内容短时重试不会重复写入。"""
+    if memory_read_only():
+        return _read_only_tool_result()
     await decay_engine.ensure_started()
     if not content or not content.strip():
         return "内容为空，无法整理。"
@@ -2210,6 +2440,8 @@ async def trace(
 ) -> str:
     """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
 
+    if memory_read_only():
+        return _read_only_tool_result()
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
 
@@ -2292,6 +2524,8 @@ _ANCHOR_LIMIT = 24
 @mcp.tool()
 async def anchor(bucket_id: str) -> str:
     """把指定桶标记为 anchor(坐标)。anchor 桶不主动出现在默认 breath 浮现,但关键词/语义检索命中时仍返回。硬上限 24 个,满了要先 release。"""
+    if memory_read_only():
+        return _read_only_tool_result()
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
         return f"未找到记忆桶: {bucket_id}"
@@ -2316,6 +2550,8 @@ async def anchor(bucket_id: str) -> str:
 @mcp.tool()
 async def release(bucket_id: str) -> str:
     """解除指定桶的 anchor 标记,桶恢复普通状态,重新参与默认 breath 浮现。pinned 状态不受影响。"""
+    if memory_read_only():
+        return _read_only_tool_result()
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
         return f"未找到记忆桶: {bucket_id}"
@@ -2342,6 +2578,8 @@ async def comment_bucket(
     """给已有桶追加一条年轮(再次读到旧记忆时的感受/补充解读),不改正文,自动 touch。
     valence/arousal 0~1=年轮自带情绪,-1=不带。再次读到旧记忆想多说一句时优先用这个,
     而不是 hold 一个新 feel 桶。"""
+    if memory_read_only():
+        return _read_only_tool_result()
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
     if not content or not content.strip():
@@ -2416,6 +2654,8 @@ async def i(
         return "\n".join(lines)
 
     # --- Write mode / 写入模式 ---
+    if memory_read_only():
+        return _read_only_tool_result()
     try:
         bucket_id = await bucket_mgr.create(
             content=content.strip(),
@@ -2620,6 +2860,8 @@ async def _pulse_write(deltas: dict, msg: str = "", mood: str = "", source: str 
 @mcp.tool()
 async def beat(bumps: str = "", msg: str = "", mood: str = "", source: str = "cc") -> str:
     """给首页Pulse卡推一把心跳(与TG端evan-bot写同一份状态)。bumps=JSON对象,9维度(活力/疲惫/思慕/亲密/占有/渴求/妒意/焦虑/护卫)的delta,每个限[-0.2,0.2],如{"思慕":0.1,"渴求":0.05}。msg=留在卡片上的一行事件(≤60字,她会看到)。mood=自定义心情短语(≤24字,顶掉自动生成的状态灰字2小时,并存入心情年轮)。source=来源端(cc/kelivo)。三个参数都可选,但至少给一个。"""
+    if memory_read_only():
+        return _read_only_tool_result()
     # Chat/Work can have a cached MCP tool list that does not yet expose the new
     # presence tool. Reserved beat sources provide a compatibility path without
     # touching Pulse, mood, emotions, Gist, or memory buckets.
@@ -3481,34 +3723,6 @@ async def api_edit(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@mcp.custom_route("/api/remember", methods=["POST"])
-async def api_remember(request):
-    """Store a memory. POST body: {"content": "...", "feel": false, "importance": 5}
-    Returns: {"id": "bucket_id"}"""
-    from starlette.responses import JSONResponse
-    try:
-        body = await request.json()
-        content = (body.get("content") or "").strip()
-        if not content:
-            return JSONResponse({"error": "content empty"}, status_code=400)
-        result = await hold(
-            content=content,
-            feel=bool(body.get("feel", False)),
-            importance=int(body.get("importance") or 5),
-            pinned=bool(body.get("pinned", False)),
-            domain=str(body.get("domain") or ""),
-            valence=float(body.get("valence") if body.get("valence") is not None else -1),
-            arousal=float(body.get("arousal") if body.get("arousal") is not None else -1),
-            tags=str(body.get("tags") or ""),
-            source_bucket=str(body.get("source_bucket") or ""),
-            quotes=body.get("quotes"),
-        )
-        return JSONResponse({"id": result})
-    except Exception as e:
-        logger.error(f"/api/remember failed: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
 # =============================================================
 # /api/status — system status for Dashboard settings tab
 # /api/status — Dashboard 设置页用系统状态
@@ -4034,11 +4248,89 @@ class GaleDashGuardMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
+_READ_ONLY_EXACT_MUTATION_ROUTES = {
+    "/api/remember",
+    "/api/schedule_message",
+    "/api/config",
+    "/api/host-vault",
+    "/api/reclassify",
+    "/api/poke",
+    "/api/night_fall/generate_gale",
+    "/api/play/generate",
+    "/auth/setup",
+    "/auth/change-password",
+}
+_READ_ONLY_MUTATION_PREFIXES = (
+    "/api/import/",
+    "/api/forget/",
+    "/api/edit/",
+)
+_READ_ONLY_POST_ONLY_ROUTES = {
+    "/api/handoff",
+    "/api/presence",
+    "/api/letters",
+    "/api/todos",
+    "/api/quotes",
+}
+
+
+class MemoryReadOnlyGuardMiddleware:
+    """Reject persistent HTTP mutations before they reach route logic."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not memory_read_only():
+            return await self.app(scope, receive, send)
+
+        path = scope.get("path", "")
+        method = scope.get("method", "").upper()
+        blocked = (
+            (path in _READ_ONLY_EXACT_MUTATION_ROUTES and method != "GET")
+            or (
+                path in _READ_ONLY_POST_ONLY_ROUTES
+                and method in {"POST", "PUT", "PATCH", "DELETE"}
+            )
+            or (
+                any(path.startswith(prefix) for prefix in _READ_ONLY_MUTATION_PREFIXES)
+                and method in {"POST", "PUT", "PATCH", "DELETE"}
+            )
+            or (
+                (path == "/chat" or path.startswith("/chat/"))
+                and method in {"POST", "PUT", "PATCH", "DELETE"}
+            )
+        )
+        if not blocked:
+            return await self.app(scope, receive, send)
+
+        body = b'{"ok":false,"error":"memory_read_only"}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 503,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"cache-control", b"no-store"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
 def install_gale_dash_guard(app):
     """Wrap an ASGI app once, with the Guard as the outermost middleware."""
     if isinstance(app, GaleDashGuardMiddleware):
         return app
     return GaleDashGuardMiddleware(app)
+
+
+def install_memory_read_only_guard(app):
+    """Wrap an ASGI app once with the read-only HTTP mutation guard."""
+    if isinstance(app, MemoryReadOnlyGuardMiddleware):
+        return app
+    return MemoryReadOnlyGuardMiddleware(app)
 
 
 def _gale_dash_rewrite_cookie_header(value: bytes) -> bytes | None:
@@ -4987,13 +5279,27 @@ if __name__ == "__main__":
         # Code / Desktop via mcp-proxy, SessionStart hooks). Dashboard routes
         # (/, /dashboard, /auth/*, /api/*) are NOT gated here — they use the
         # upstream cookie-session auth (_require_auth) instead.
-        # If OMBRE_AUTH_TOKEN env var is unset, auth is disabled (warning logged).
+        # OMBRE_REQUIRE_AUTH=1 makes a missing token a startup error. URL query
+        # credentials are rejected unless the legacy OMBRE_ALLOW_QUERY_TOKEN=1
+        # switch is set explicitly.
         # 保护 MCP 与 hook 接口（Claude Code/Desktop 通过 mcp-proxy 调用、
         # SessionStart hooks）。Dashboard 路由（/, /dashboard, /auth/*, /api/*）
         # 不在此处拦截 —— 由 upstream 的 cookie session 鉴权 (_require_auth) 处理。
         # 未设置 OMBRE_AUTH_TOKEN 时不强制（向后兼容，启动会有警告）。
         OMBRE_AUTH_TOKEN = os.environ.get("OMBRE_AUTH_TOKEN", "").strip()
-        PROTECTED_PREFIXES = ("/mcp", "/breath-hook", "/dream-hook")
+        OMBRE_REQUIRE_AUTH = _env_flag("OMBRE_REQUIRE_AUTH")
+        OMBRE_ALLOW_QUERY_TOKEN = _env_flag("OMBRE_ALLOW_QUERY_TOKEN")
+        OMBRE_OAUTH_ENABLED = _oauth_runtime is not None
+        PROTECTED_PREFIXES = (
+            ("/breath-hook", "/dream-hook")
+            if OMBRE_OAUTH_ENABLED
+            else ("/mcp", "/breath-hook", "/dream-hook")
+        )
+
+        if OMBRE_REQUIRE_AUTH and not OMBRE_AUTH_TOKEN and not OMBRE_OAUTH_ENABLED:
+            raise RuntimeError(
+                "OMBRE_AUTH_TOKEN is required when OMBRE_REQUIRE_AUTH is enabled"
+            )
 
         class BearerAuthMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
@@ -5006,16 +5312,11 @@ if __name__ == "__main__":
                     return await call_next(request)
                 if not OMBRE_AUTH_TOKEN:
                     return await call_next(request)
-                # Accept token via Authorization header OR ?token=xxx query param
-                # 同时支持 Header 和 URL query 两种方式传 token,后者用于无法设置自定义
-                # header 的客户端(例如 Anthropic Web/iOS Connectors 对话框)
-                provided = ""
-                auth_header = request.headers.get("Authorization", "")
-                if auth_header.startswith("Bearer "):
-                    provided = auth_header[7:].strip()
-                elif "token" in request.query_params:
-                    provided = request.query_params["token"].strip()
-                if not provided or provided != OMBRE_AUTH_TOKEN:
+                if not _request_has_valid_bearer(
+                    request,
+                    OMBRE_AUTH_TOKEN,
+                    allow_query_token=OMBRE_ALLOW_QUERY_TOKEN,
+                ):
                     return JSONResponse({"error": "unauthorized"}, status_code=401)
                 return await call_next(request)
 
@@ -5069,8 +5370,13 @@ if __name__ == "__main__":
         _app = install_freeze_all_guard(_app)
         # Wrap last so Gale Dashboard rejections happen before CORS preflight handling.
         _app = install_gale_dash_guard(_app)
-        if OMBRE_AUTH_TOKEN:
-            logger.info(f"🔒 Bearer auth ENABLED (token length: {len(OMBRE_AUTH_TOKEN)}) / 鉴权已启用")
+        # Production cutover can expose reads while every persistent HTTP
+        # mutation remains deterministically rejected.
+        _app = install_memory_read_only_guard(_app)
+        if OMBRE_OAUTH_ENABLED:
+            logger.info("OAuth 2.1 auth ENABLED for MCP / MCP 已启用 OAuth 2.1")
+        elif OMBRE_AUTH_TOKEN:
+            logger.info("🔒 Bearer auth ENABLED / 鉴权已启用")
         else:
             logger.warning("⚠️  Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
 

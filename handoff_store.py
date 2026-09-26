@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterable, Iterator
+from urllib.parse import quote
+
+from runtime_mode import memory_read_only
 
 
 HANDOFF_STATUSES = frozenset(
@@ -100,7 +104,12 @@ class HandoffStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=5.0)
+        if memory_read_only():
+            uri = f"file:{quote(os.path.abspath(self.db_path))}?mode=ro"
+            connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+            connection.execute("PRAGMA query_only = ON")
+        else:
+            connection = sqlite3.connect(self.db_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 5000")
         return connection
@@ -115,6 +124,10 @@ class HandoffStore:
             connection.close()
 
     def _init_db(self) -> None:
+        if memory_read_only():
+            with self._connection() as connection:
+                connection.execute("SELECT 1 FROM handoffs LIMIT 1").fetchone()
+            return
         with self._connection() as connection:
             connection.execute(
                 """

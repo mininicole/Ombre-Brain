@@ -1,0 +1,9 @@
+--only-binary=:all:
+-c constraints-bge-m3-arm64.txt
+
+torch==2.8.0
+transformers==4.57.6
+huggingface-hub==0.36.2
+fastapi==0.116.1
+uvicorn==0.35.0
+psutil==7.0.0

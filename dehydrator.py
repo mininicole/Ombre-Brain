@@ -29,9 +29,11 @@ import json
 import hashlib
 import sqlite3
 import logging
+from urllib.parse import quote
 
 from openai import AsyncOpenAI
 
+from runtime_mode import memory_read_only
 from utils import count_tokens_approx
 
 logger = logging.getLogger("ombre_brain.dehydrator")
@@ -81,7 +83,8 @@ DIGEST_PROMPT = """你是一个日记整理专家。用户会发送一段包含�
     "valence": 0.7,
     "arousal": 0.4,
     "tags": ["核心词1", "核心词2", "扩展词1", "扩展词2"],
-    "importance": 5
+    "importance": 5,
+    "memory_lifecycle": "stable_fact | event | transient_state"
   }
 ]
 
@@ -97,6 +100,7 @@ tags 生成规则：先从原文精准提取 3~5 个核心词，再引申扩展 
   事务: ["财务", "计划", "待办"]
   内心: ["情绪", "回忆", "梦境", "自省"]
 importance: 1-10，根据内容重要程度判断
+memory_lifecycle：长期偏好、人物关系、身份或固定设定选 stable_fact；发生过且不表示仍持续的事情选 event；位置、身体感受、正在进行、临时计划等会自然失效的状态选 transient_state。只允许这三个值。
 valence: 0~1（0=消极, 0.5=中性, 1=积极）
 arousal: 0~1（0=平静, 0.5=普通, 1=激动）"""
 
@@ -136,7 +140,11 @@ ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出
    第二步—引申扩展：自动补充 8~10 个与当前场景语义相关的词，包括近义词、上位词、关联场景词、用户可能用不同措辞搜索的词
    两步合并为一个 tags 数组，总计 10~15 个
 5. suggested_name（建议桶名）：10字以内的简短标题
-6. 在 tags 和 suggested_name 中不要使用 [[]] 双链标记
+6. memory_lifecycle（记忆生命周期）：只允许以下三个值：
+   - stable_fact：长期偏好、人物关系、身份、固定设定等稳定事实
+   - event：发生过的事情；它说明过去发生了什么，不代表现在仍持续
+   - transient_state：位置、身体感受、正在进行、临时计划等会自然失效的状态
+7. 在 tags 和 suggested_name 中不要使用 [[]] 双链标记
 
 输出格式（纯 JSON，无其他内容）：
 {
@@ -144,7 +152,8 @@ ANALYZE_PROMPT = """你是一个内容分析器。请分析以下文本，输出
   "valence": 0.7,
   "arousal": 0.4,
   "tags": ["核心词1", "核心词2", "扩展词1", "扩展词2", "..."],
-  "suggested_name": "简短标题"
+  "suggested_name": "简短标题",
+  "memory_lifecycle": "stable_fact | event | transient_state"
 }"""
 
 
@@ -192,6 +201,12 @@ class Dehydrator:
 
     def _init_cache_db(self) -> sqlite3.Connection:
         """Open (or create) the dehydration cache DB; return a persistent connection."""
+        if memory_read_only():
+            uri = f"file:{quote(os.path.abspath(self.cache_db_path))}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("SELECT 1 FROM dehydration_cache LIMIT 1").fetchone()
+            return conn
         os.makedirs(os.path.dirname(self.cache_db_path), exist_ok=True)
         conn = sqlite3.connect(self.cache_db_path, check_same_thread=False)
         conn.execute("""
@@ -216,6 +231,8 @@ class Dehydrator:
 
     def _set_cached_summary(self, content: str, summary: str):
         """Store dehydration result in cache."""
+        if memory_read_only():
+            return
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         self._cache_conn.execute(
             "INSERT OR REPLACE INTO dehydration_cache (content_hash, summary, model) VALUES (?, ?, ?)",
@@ -225,6 +242,8 @@ class Dehydrator:
 
     def invalidate_cache(self, content: str):
         """Remove cached summary for specific content (call when bucket content changes)."""
+        if memory_read_only():
+            return
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         self._cache_conn.execute("DELETE FROM dehydration_cache WHERE content_hash = ?", (content_hash,))
         self._cache_conn.commit()
@@ -498,12 +517,18 @@ class Dehydrator:
         except (ValueError, TypeError):
             valence, arousal = 0.5, 0.3
 
+        lifecycle = str(result.get("memory_lifecycle") or "").strip().casefold()
+        if lifecycle not in {"stable_fact", "event", "transient_state"}:
+            # Fail closed: an unknown current state must not become permanent.
+            lifecycle = "transient_state"
+
         return {
             "domain": result.get("domain", ["未分类"])[:3],
             "valence": valence,
             "arousal": arousal,
             "tags": result.get("tags", [])[:15],
             "suggested_name": str(result.get("suggested_name", ""))[:20],
+            "memory_lifecycle": lifecycle,
         }
 
     # ---------------------------------------------------------
@@ -521,6 +546,7 @@ class Dehydrator:
             "arousal": 0.3,
             "tags": [],
             "suggested_name": "",
+            "memory_lifecycle": "transient_state",
         }
 
     # ---------------------------------------------------------
@@ -612,6 +638,10 @@ class Dehydrator:
             except (ValueError, TypeError):
                 valence, arousal = 0.5, 0.3
 
+            lifecycle = str(item.get("memory_lifecycle") or "").strip().casefold()
+            if lifecycle not in {"stable_fact", "event", "transient_state"}:
+                lifecycle = "transient_state"
+
             validated.append({
                 "name": str(item.get("name", ""))[:20],
                 "content": str(item.get("content", "")),
@@ -620,5 +650,6 @@ class Dehydrator:
                 "arousal": arousal,
                 "tags": item.get("tags", [])[:15],
                 "importance": importance,
+                "memory_lifecycle": lifecycle,
             })
         return validated
