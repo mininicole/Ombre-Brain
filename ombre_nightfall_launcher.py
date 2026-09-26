@@ -23,6 +23,9 @@ def main() -> None:
     def run_uvicorn(app, host="0.0.0.0", port=8000, **kwargs):
         del host
         kwargs.pop("access_log", None)
+        # Night-Fall builds its own ASGI app and never added server.py's
+        # bearer check, which left /mcp open on Fly. Install it here.
+        app = ombre_server.install_bearer_auth(app)
         app = ombre_server.install_gale_dash_guard(app)
         # Night-Fall owns the cloud ASGI launch path, so install the process
         # freeze here too. It remains a no-op for Evan because only Gale gets

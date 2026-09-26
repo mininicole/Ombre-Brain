@@ -4345,6 +4345,73 @@ def install_memory_read_only_guard(app):
     return MemoryReadOnlyGuardMiddleware(app)
 
 
+def _bearer_protected_prefixes() -> tuple[str, ...]:
+    # With OAuth the MCP SDK enforces its own tokens on /mcp.
+    if _oauth_runtime is not None:
+        return ("/breath-hook", "/dream-hook")
+    return ("/mcp", "/breath-hook", "/dream-hook")
+
+
+class BearerAuthGuardMiddleware:
+    """Require OMBRE_AUTH_TOKEN on MCP and hook paths.
+
+    Module-level so every launch path installs it. Until 2026-09-26 this
+    check only existed inside server.py's __main__ block, and the Night-Fall
+    launcher (the path Fly actually ran) never added it, leaving /mcp open.
+    Dashboard/site routes keep their own cookie auth and are not gated here.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self.token = os.environ.get("OMBRE_AUTH_TOKEN", "").strip()
+        self.allow_query_token = _env_flag("OMBRE_ALLOW_QUERY_TOKEN")
+        self.prefixes = _bearer_protected_prefixes()
+        if _env_flag("OMBRE_REQUIRE_AUTH") and not self.token and _oauth_runtime is None:
+            raise RuntimeError(
+                "OMBRE_AUTH_TOKEN is required when OMBRE_REQUIRE_AUTH is enabled"
+            )
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not self.token:
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        protected = any(path == p or path.startswith(p + "/") for p in self.prefixes)
+        # CORS preflight carries no credentials or data.
+        if not protected or scope.get("method", "").upper() == "OPTIONS":
+            return await self.app(scope, receive, send)
+        from starlette.requests import Request
+        if _request_has_valid_bearer(
+            Request(scope),
+            self.token,
+            allow_query_token=self.allow_query_token,
+        ):
+            return await self.app(scope, receive, send)
+        body = b'{"error":"unauthorized"}'
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
+def install_bearer_auth(app):
+    """Wrap an ASGI app once with the MCP/hook bearer guard."""
+    if isinstance(app, BearerAuthGuardMiddleware):
+        return app
+    guard = BearerAuthGuardMiddleware(app)
+    if _oauth_runtime is not None:
+        logger.info("OAuth 2.1 auth ENABLED for MCP / MCP 已启用 OAuth 2.1")
+    elif guard.token:
+        logger.info("Bearer auth ENABLED / 鉴权已启用")
+    else:
+        logger.warning("Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
+    return guard
+
+
 def _gale_dash_rewrite_cookie_header(value: bytes) -> bytes | None:
     """Remove Evan's session and map Gale's browser cookie for the upstream."""
     kept = []
@@ -5282,10 +5349,7 @@ if __name__ == "__main__":
         import threading
         import uvicorn
         from starlette.middleware.cors import CORSMiddleware
-        from starlette.middleware.base import BaseHTTPMiddleware
-        from starlette.responses import JSONResponse
-
-        # --- Bearer token auth middleware ---
+        # --- Bearer token auth: see BearerAuthGuardMiddleware ---
         # --- Bearer token 鉴权中间件 ---
         # Protects MCP and hook endpoints used by programmatic clients (Claude
         # Code / Desktop via mcp-proxy, SessionStart hooks). Dashboard routes
@@ -5298,40 +5362,6 @@ if __name__ == "__main__":
         # SessionStart hooks）。Dashboard 路由（/, /dashboard, /auth/*, /api/*）
         # 不在此处拦截 —— 由 upstream 的 cookie session 鉴权 (_require_auth) 处理。
         # 未设置 OMBRE_AUTH_TOKEN 时不强制（向后兼容，启动会有警告）。
-        OMBRE_AUTH_TOKEN = os.environ.get("OMBRE_AUTH_TOKEN", "").strip()
-        OMBRE_REQUIRE_AUTH = _env_flag("OMBRE_REQUIRE_AUTH")
-        OMBRE_ALLOW_QUERY_TOKEN = _env_flag("OMBRE_ALLOW_QUERY_TOKEN")
-        OMBRE_OAUTH_ENABLED = _oauth_runtime is not None
-        PROTECTED_PREFIXES = (
-            ("/breath-hook", "/dream-hook")
-            if OMBRE_OAUTH_ENABLED
-            else ("/mcp", "/breath-hook", "/dream-hook")
-        )
-
-        if OMBRE_REQUIRE_AUTH and not OMBRE_AUTH_TOKEN and not OMBRE_OAUTH_ENABLED:
-            raise RuntimeError(
-                "OMBRE_AUTH_TOKEN is required when OMBRE_REQUIRE_AUTH is enabled"
-            )
-
-        class BearerAuthMiddleware(BaseHTTPMiddleware):
-            async def dispatch(self, request, call_next):
-                path = request.url.path
-                needs_bearer = any(path == p or path.startswith(p + "/") or path.startswith(p + "?") for p in PROTECTED_PREFIXES)
-                # MCP transport may hit exactly /mcp (no trailing slash)
-                if not needs_bearer:
-                    needs_bearer = path in PROTECTED_PREFIXES
-                if not needs_bearer:
-                    return await call_next(request)
-                if not OMBRE_AUTH_TOKEN:
-                    return await call_next(request)
-                if not _request_has_valid_bearer(
-                    request,
-                    OMBRE_AUTH_TOKEN,
-                    allow_query_token=OMBRE_ALLOW_QUERY_TOKEN,
-                ):
-                    return JSONResponse({"error": "unauthorized"}, status_code=401)
-                return await call_next(request)
-
         # --- Application-level keepalive: ping /health every 60s ---
         # --- 应用层保活：每 60 秒 ping 一次 /health，防止 Cloudflare Tunnel 空闲断连 ---
         async def _keepalive_loop():
@@ -5376,7 +5406,7 @@ if __name__ == "__main__":
 
         # Apply auth middleware after CORS so preflight requests pass through
         # 鉴权中间件加在 CORS 之后，让 OPTIONS 预检请求能通过
-        _app.add_middleware(BearerAuthMiddleware)
+        _app = install_bearer_auth(_app)
         # A process-scoped full freeze rejects every memory read/write route.
         # /health remains available but returns before schedule or bucket access.
         _app = install_freeze_all_guard(_app)
@@ -5385,13 +5415,6 @@ if __name__ == "__main__":
         # Production cutover can expose reads while every persistent HTTP
         # mutation remains deterministically rejected.
         _app = install_memory_read_only_guard(_app)
-        if OMBRE_OAUTH_ENABLED:
-            logger.info("OAuth 2.1 auth ENABLED for MCP / MCP 已启用 OAuth 2.1")
-        elif OMBRE_AUTH_TOKEN:
-            logger.info("🔒 Bearer auth ENABLED / 鉴权已启用")
-        else:
-            logger.warning("⚠️  Bearer auth DISABLED — OMBRE_AUTH_TOKEN not set. Anyone with the URL can read/write your memory. / 鉴权未启用，URL 泄露=记忆裸奔")
-
         uvicorn.run(
             _app,
             host=os.environ.get("OMBRE_HOST", "0.0.0.0"),
