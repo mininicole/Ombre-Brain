@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 import math
+import os
 from pathlib import Path
 import re
 from typing import Iterable
@@ -209,6 +210,28 @@ def resolve_valid_until(
     return None, "default_window"
 
 
+def legacy_gate_enabled() -> bool:
+    """Whether buckets without explicit lifecycle metadata go through the gate.
+
+    OMBRE_TIME_GATE_LEGACY=off keeps pre-lifecycle buckets on the old recall
+    behaviour (always injected, compact one-line format). Evan's store is
+    mostly diary-style legacy buckets where words like 今天/最近 describe what
+    happened, not a current state; the word-list inference would hide about a
+    third of them. Gale keeps the default (on).
+    """
+    return os.environ.get("OMBRE_TIME_GATE_LEGACY", "on").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+def has_explicit_lifecycle(bucket: dict) -> bool:
+    metadata = bucket.get("metadata", {}) or {}
+    return any(
+        str(metadata.get(field) or "").strip().casefold() in LIFECYCLES
+        for field in ("memory_lifecycle", "lifecycle", "memory_type")
+    )
+
+
 def evaluate_recall_candidate(
     bucket: dict,
     query: str,
@@ -239,7 +262,11 @@ def evaluate_recall_candidate(
     if recorded is not None:
         age_days = max(0.0, (now_value - recorded).total_seconds() / 86400.0)
 
-    if lifecycle == "stable_fact":
+    if not has_explicit_lifecycle(bucket) and not legacy_gate_enabled():
+        weight = 1.0
+        inject = True
+        reason = "legacy_ungated"
+    elif lifecycle == "stable_fact":
         if age_days is None:
             weight = 0.92
         else:
@@ -353,6 +380,9 @@ def format_memory_injection(
     *,
     display_timezone: str = "Asia/Shanghai",
 ) -> str:
+    if decision.reason == "legacy_ungated":
+        bucket_id = str(bucket.get("id") or bucket.get("metadata", {}).get("id") or "unknown")
+        return f"[bucket_id:{bucket_id}] {summary}"
     if decision.lifecycle == "stable_fact":
         heading = "[Stable memory]"
         note = "Long-term fact or preference, unless the current user message corrects or updates it."
