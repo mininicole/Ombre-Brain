@@ -27,7 +27,10 @@ Environment=OMBRE_HOOK_SKIP=1
 Environment=EVAN_SEND_URL=http://127.0.0.1:9/candidate-disabled
 Environment=GALE_SEND_URL=http://127.0.0.1:9/candidate-disabled
 Environment=CHATNEST_PORT=18787
-ExecStart=/opt/evan-memory/venv/bin/python /opt/evan-memory/current/server.py
+Environment=OMBRE_HOME=/opt/evan-memory/current
+# The Night-Fall launcher also runs the 60s /health keepalive that drives
+# scheduled_message dispatch; dream generation stays off (AUTO_HOUR=-1).
+ExecStart=/opt/evan-memory/venv/bin/python /opt/evan-memory/current/ombre_nightfall_launcher.py
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=90

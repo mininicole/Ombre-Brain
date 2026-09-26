@@ -28,6 +28,8 @@ def main() -> None:
         # freeze here too. It remains a no-op for Evan because only Gale gets
         # the sentinel environment variable.
         app = ombre_server.install_freeze_all_guard(app)
+        # OMBRE_READ_ONLY=1 rejects persistent HTTP writes (used around cutover).
+        app = ombre_server.install_memory_read_only_guard(app)
         return upstream_uvicorn_run(
             app,
             host=os.environ.get("OMBRE_HOST", "0.0.0.0"),
