@@ -1,0 +1,50 @@
+[Unit]
+Description=Evan Memory Oracle candidate (loopback only, rehearsal data copy)
+Wants=network-online.target gale-bge-m3.service
+After=network-online.target gale-bge-m3.service
+
+[Service]
+Type=simple
+User=evan-memory
+Group=evan-memory
+WorkingDirectory=/opt/evan-memory/current
+EnvironmentFile=/etc/evan-memory-candidate.env
+Environment=OMBRE_HOST=127.0.0.1
+Environment=OMBRE_PORT=18800
+Environment=OMBRE_TRANSPORT=streamable-http
+Environment=OMBRE_BUCKETS_DIR=/var/lib/evan-memory-candidate/data
+Environment=OMBRE_EMBEDDING_BASE_URL=http://127.0.0.1:18810/v1
+Environment=OMBRE_EMBEDDING_MODEL=BAAI/bge-m3
+Environment=OMBRE_REQUIRE_AUTH=1
+Environment=OMBRE_ALLOW_QUERY_TOKEN=0
+# Evan-specific switches (see recall_time.legacy_gate_enabled, server._GALE_PROXY_ENABLED)
+Environment=OMBRE_TIME_GATE_LEGACY=off
+Environment=OMBRE_GALE_PROXY=off
+Environment=GALE_MCP_SLUG=
+# Candidate must never reach real people or shared state.
+Environment=NIGHT_FALL_AUTO_HOUR_UTC=-1
+Environment=OMBRE_HOOK_SKIP=1
+Environment=EVAN_SEND_URL=http://127.0.0.1:9/candidate-disabled
+Environment=GALE_SEND_URL=http://127.0.0.1:9/candidate-disabled
+Environment=CHATNEST_PORT=18787
+ExecStart=/opt/evan-memory/venv/bin/python /opt/evan-memory/current/server.py
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/evan-memory-candidate
+
+[Install]
+WantedBy=multi-user.target
