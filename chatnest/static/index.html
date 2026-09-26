@@ -437,7 +437,7 @@ const state={
   token:localStorage.getItem('chat_token'),
   convId:localStorage.getItem('chat_conversation'),
   legacySessionId:localStorage.getItem('chat_session'),
-  model:localStorage.getItem('chat_model')||'claude-opus-5',
+  model:localStorage.getItem('chat_model')||'claude-opus-5-5',
   settings:JSON.parse(localStorage.getItem('chat_model_settings')||'{}'),
   models:[],busy:false,currentTitle:'新对话',starred:false,pendingFiles:[],menuSession:null
 };

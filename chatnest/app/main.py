@@ -201,7 +201,7 @@ class ChatBody(BaseModel):
     session_id: str | None = Field(default=None, max_length=256)
     edit_message_id: int | None = Field(default=None, ge=1)
     retry_message_id: int | None = Field(default=None, ge=1)
-    model: str = Field(default="claude-opus-5", max_length=64)
+    model: str = Field(default="claude-opus-5-5", max_length=64)
     effort: str = Field(default="medium", max_length=16)
     extended: bool = True
     attachments: list[str] = Field(default_factory=list, max_length=10)
@@ -594,7 +594,7 @@ async def chat(body: ChatBody) -> StreamingResponse:
                 # 小内存机器冷启动 + 醒井常要 60~100s 才吐第一个字，这段
                 # 若没有字节外流，会被 Cloudflare 在 ~100s 静默后掐断连接
                 # （前端表现为"连接意外结束"）。
-                if body.model == "codex":
+                if body.model == "codex" and any(m["id"] == "codex" for m in available_models()):
                     async for c in stream_codex_chat(*chat_args):
                         yield c
                     return

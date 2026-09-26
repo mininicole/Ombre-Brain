@@ -188,7 +188,7 @@ async def stream_chat(
     message: str,
     conv_id: str,
     session_id: str | None = None,
-    model: str = "claude-opus-5",
+    model: str = "claude-opus-5-5",
     effort: str = "medium",
     extended: bool = True,
     timing_callback: Callable[[str], None] | None = None,
@@ -198,7 +198,14 @@ async def stream_chat(
         None,
     )
     if model_config is None:
-        raise ValueError("unsupported model")
+        # A browser can still hold a model id that was removed from
+        # models.json (localStorage chat_model). Fall back to the first
+        # listed model instead of failing the whole turn.
+        catalog = available_models()
+        if not catalog:
+            raise ValueError("unsupported model")
+        model_config = catalog[0]
+        model = model_config["id"]
     if session_id and get_session_info(session_id, directory=PROJECT_DIR) is None:
         raise SessionResumeError("会话恢复失败")
     thinking, selected_effort = thinking_options(model_config, effort, extended)
