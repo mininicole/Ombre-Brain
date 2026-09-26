@@ -18,20 +18,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends git nodejs npm 
 
 # Claude Code CLI：ChatNest 的运行时，认证走 CLAUDE_CODE_OAUTH_TOKEN（fly secrets）
 # @latest：2.1.198 时代 Fable 5 的 thinking 块落盘是空的，升级 CLI 换新思考流格式
-RUN npm install -g @anthropic-ai/claude-code@latest && npm cache clean --force
+# 2026-09-26: pinned to the version Fly was running, so a security rebuild
+# does not silently upgrade the /chat runtime.
+RUN npm install -g @anthropic-ai/claude-code@2.1.280 && npm cache clean --force
 
 # Install dependencies first (leverage Docker cache)
 # 先装依赖（利用 Docker 缓存）
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt constraints-fly.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c constraints-fly.txt
 
 # ChatNest 依赖（精简版，不含本地向量检索那套）
 COPY chatnest/requirements-fly.txt ./chatnest-requirements.txt
-RUN pip install --no-cache-dir -r chatnest-requirements.txt
+RUN pip install --no-cache-dir -r chatnest-requirements.txt -c constraints-fly.txt
 
 # Night-Fall extension: dream lifecycle + breath-gated auto-surface
 # Night-Fall 扩展：梦境生命周期 + breath 自动浮梦
-RUN pip install --no-cache-dir git+https://github.com/mininicole/Night-Fall.git@0ebf653
+RUN pip install --no-cache-dir git+https://github.com/mininicole/Night-Fall.git@0ebf653 -c constraints-fly.txt
 
 # Copy project files / 复制项目文件
 COPY *.py .
