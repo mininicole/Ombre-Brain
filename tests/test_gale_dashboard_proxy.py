@@ -1239,3 +1239,35 @@ async def test_hold_passes_explicit_temporal_metadata_from_existing_analysis_cal
 
     assert create.await_args.kwargs["memory_lifecycle"] == "event"
     assert create.await_args.kwargs["source_timestamp"].endswith("+00:00")
+
+
+@pytest.mark.asyncio
+async def test_gale_proxy_switch_off_blocks_every_gale_path(monkeypatch, server_module):
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    forwarded = 0
+
+    async def should_not_run(_request):
+        nonlocal forwarded
+        forwarded += 1
+        return PlainTextResponse("forwarded")
+
+    app = Starlette(routes=[
+        Route("/gale-dash/{path:path}", should_not_run, methods=["GET", "POST"]),
+        Route("/api/night_fall/generate_gale", should_not_run, methods=["POST"]),
+        Route("/outside", lambda _r: PlainTextResponse("outside"), methods=["GET"]),
+    ])
+    monkeypatch.setattr(server_module, "_GALE_PROXY_ENABLED", False)
+    guarded_app = server_module.install_gale_dash_guard(app)
+    transport = httpx.ASGITransport(app=guarded_app)
+    async with httpx.AsyncClient(transport=transport, base_url="https://example.test") as client:
+        dashboard = await client.get("/gale-dash/dashboard")
+        generate = await client.post("/api/night_fall/generate_gale")
+        outside = await client.get("/outside")
+
+    assert dashboard.status_code == 404
+    assert generate.status_code == 404
+    assert outside.status_code == 200
+    assert forwarded == 0

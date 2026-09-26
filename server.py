@@ -4109,6 +4109,12 @@ async def chat_proxy(request):
 
 # --- Gale Dashboard：独立路径反代到独立记忆进程 ---
 _GALE_DASH_BASE = "http://127.0.0.1:8790"
+# On Fly, 127.0.0.1:8790 is Gale's frozen copy inside the same Machine. On
+# Oracle the same port is Gale's production memory behind its own OAuth, so
+# Evan's instance must not proxy there: OMBRE_GALE_PROXY=off makes every
+# Gale proxy path (/gale-dash/*, /api/night_fall/generate_gale) return 404.
+_GALE_PROXY_ENABLED = _env_flag("OMBRE_GALE_PROXY", default=True)
+_GALE_PROXY_PATHS = ("/gale-dash", "/api/night_fall/generate_gale")
 _gale_dash_client: "httpx.AsyncClient | None" = None
 _GALE_DASH_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=60.0, pool=5.0)
 _GALE_DASH_METHODS = [
@@ -4226,10 +4232,16 @@ class GaleDashGuardMiddleware:
 
         request_path = scope.get("path", "")
         prefix = "/gale-dash/"
-        rejected = request_path == "/gale-dash"
+        rejected = request_path == "/gale-dash" or (
+            not _GALE_PROXY_ENABLED
+            and any(
+                request_path == item or request_path.startswith(item + "/")
+                for item in _GALE_PROXY_PATHS
+            )
+        )
         if request_path.startswith(prefix):
             path = request_path[len(prefix):]
-            rejected = (
+            rejected = rejected or (
                 not _gale_dash_scope_path_is_safe(scope, path)
                 or not _gale_dash_route_allowed(path, scope.get("method", ""))
             )
@@ -4500,7 +4512,7 @@ async def gale_dash_proxy(request):
 
 
 # --- Gale MCP：通过秘密路径反代到独立记忆进程 ---
-_GALE_MCP_SLUG = os.environ.get("GALE_MCP_SLUG", "").strip()
+_GALE_MCP_SLUG = os.environ.get("GALE_MCP_SLUG", "").strip() if _GALE_PROXY_ENABLED else ""
 _GALE_MCP_BASE = "http://127.0.0.1:8790"
 _gale_mcp_client: "httpx.AsyncClient | None" = None
 _GALE_MCP_STRIPPED_HEADERS = {
