@@ -1269,6 +1269,7 @@ async def api_recall(request):
             quotes=bool(body.get("quotes", False)),
             history_mode=bool(body.get("history_mode", False)),
             current_state_override=bool(body.get("current_state_override", False)),
+            include_pinned=bool(body.get("include_pinned", True)),
         )
         # Night-Fall auto-surface — query 分支默认不触发，这里手动调一下，
         # 让 REST 客户端也能有"梦自己浮上来"的体验。
@@ -1288,6 +1289,64 @@ async def api_recall(request):
     except Exception as e:
         logger.warning(f"/api/recall failed: {e}")
         return JSONResponse({"text": "", "error": str(e)}, status_code=500)
+
+
+async def _render_pinned_lines(domain_filter, max_tokens: int) -> tuple[list[str], int]:
+    """Dehydrated pinned/protected bucket lines within a token budget.
+
+    Strict domain isolation: with a domain filter, a pinned bucket is visible
+    only when its metadata.domain intersects it -- never global by default,
+    or Evan's private pinned buckets would leak to other callers.
+    """
+    lines: list[str] = []
+    used = 0
+    expected = {str(value).lower() for value in (domain_filter or [])}
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        logger.warning(f"search 模式列钉桶失败: {e}")
+        return lines, used
+    for b in all_buckets:
+        meta = b["metadata"]
+        if not (meta.get("pinned") or meta.get("protected")):
+            continue
+        if expected:
+            bucket_domains = meta.get("domain") or []
+            if isinstance(bucket_domains, str):
+                bucket_domains = [bucket_domains]
+            if not ({str(value).lower() for value in bucket_domains} & expected):
+                continue
+        try:
+            clean_meta = _summary_metadata(meta)
+            summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+            line = f"📌 [核心准则] [bucket_id:{b['id']}] {summary}"
+            line_tokens = count_tokens_approx(line)
+            if used + line_tokens > max_tokens:
+                logger.warning(f"search 模式钉桶预算在 {b['id']} 前耗尽")
+                continue
+            lines.append(line)
+            used += line_tokens
+        except Exception as e:
+            logger.warning(f"search 模式钉选桶脱水失败: {e}")
+    return lines, used
+
+
+# =============================================================
+# /api/pinned — pinned core buckets only, for callers that keep them in a
+# fixed (cacheable) prompt and call /api/recall with include_pinned=false.
+# GET ?domain=a,b&max_tokens=3000  ->  {"text": "...", "count": n}
+# =============================================================
+@mcp.custom_route("/api/pinned", methods=["GET"])
+async def api_pinned(request):
+    from starlette.responses import JSONResponse
+    domain = str(request.query_params.get("domain") or "").strip()
+    domain_filter = [d.strip() for d in domain.split(",") if d.strip()] or None
+    try:
+        max_tokens = int(request.query_params.get("max_tokens") or 3000)
+    except (TypeError, ValueError):
+        max_tokens = 3000
+    lines, _ = await _render_pinned_lines(domain_filter, max(500, min(max_tokens, 10000)))
+    return JSONResponse({"text": "\n---\n".join(lines), "count": len(lines)})
 
 
 # =============================================================
@@ -1648,6 +1707,7 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
     quotes: bool = False,
     history_mode: bool = False,
     current_state_override: bool = False,
+    include_pinned: bool = True,
 ) -> str:
     """检索/浮现记忆。不传query或传空=自动浮现(按创建时间倒序,浮现最近的未解决桶+钉桶+冷启动重要桶)。有query=关键词检索。history_mode=True 明确表示用户在询问过去，允许已过期 event/transient 以 Historical memory 返回；False 时仍兼容识别常见历史问法。current_state_override=True 表示当前用户消息已经明确报告新状态，此时所有 recalled transient（包括未过期候选）都不得注入；stable fact/event 不受此闸门影响。max_tokens控制包括钉桶在内的返回总token上限(默认4000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认2,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。include_recent>0:仅search分支生效,优先追加最多N条"最近未解决桶"（按 created 倒序，排除已在matches里的），再填充关键词/向量匹配，共享 max_tokens 预算。quotes=True 仅为本次查询命中的桶附上写入时主动保留的原话；普通浮现绝不返回引语。"""
     await decay_engine.ensure_started()
@@ -1917,35 +1977,16 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
 
     # --- Pinned buckets always surface in search mode too ---
     # 1077 行排除 pinned 时假设浮现模式能补回来，但 /api/recall 永远走 query 分支，
-    # 钉桶就再也出不来。这里独立加载并严格按 domain 隔离：
-    # 调用方传 domain 时，钉桶 metadata.domain 必须跟它有交集才可见——
-    # 绝不"默认全局可见"，否则历史上没标隔离 tag 的 Evan 私聊钉桶会泄漏给 Gale。
+    # 钉桶就再也出不来。严格按 domain 隔离（见 _render_pinned_lines）。
     # 钉桶与普通检索结果共享 max_tokens，避免核心准则绕过总预算。
+    # include_pinned=False：调用方自己把钉桶放进固定 prompt（TG Evan），
+    # 这里就不再占用本轮检索预算（2026-09-27：钉桶曾把搜索命中挤到 0 条）。
     pinned_results = []
     pinned_token_used = 0
-    try:
-        all_buckets_for_pinned = await bucket_mgr.list_all(include_archive=False)
-        for b in all_buckets_for_pinned:
-            meta = b["metadata"]
-            if not (meta.get("pinned") or meta.get("protected")):
-                continue
-            if not _matches_search_domain(b):
-                continue
-            try:
-                clean_meta = _summary_metadata(meta)
-                summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                line = f"📌 [核心准则] [bucket_id:{b['id']}] {summary}"
-                line_tokens = count_tokens_approx(line)
-                if pinned_token_used + line_tokens > max_tokens:
-                    logger.warning(f"search 模式钉桶预算在 {b['id']} 前耗尽")
-                    continue
-                pinned_results.append(line)
-                pinned_token_used += line_tokens
-            except Exception as e:
-                logger.warning(f"search 模式钉选桶脱水失败: {e}")
-                continue
-    except Exception as e:
-        logger.warning(f"search 模式列钉桶失败: {e}")
+    if include_pinned:
+        pinned_results, pinned_token_used = await _render_pinned_lines(
+            domain_filter, max_tokens
+        )
 
     try:
         lexical_matches = await bucket_mgr.search(

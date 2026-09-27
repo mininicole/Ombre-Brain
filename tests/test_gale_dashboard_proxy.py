@@ -1271,3 +1271,56 @@ async def test_gale_proxy_switch_off_blocks_every_gale_path(monkeypatch, server_
     assert generate.status_code == 404
     assert outside.status_code == 200
     assert forwarded == 0
+
+
+@pytest.mark.asyncio
+async def test_breath_include_pinned_false_leaves_budget_for_search(monkeypatch, server_module):
+    pinned = {
+        "id": "pinned-core",
+        "metadata": {"pinned": True, "created": "2026-08-01T00:00:00Z"},
+        "content": "核心" * 250,
+    }
+    match = {
+        "id": "search-match",
+        "metadata": {"created": "2026-09-20T00:00:00Z", "memory_lifecycle": "stable_fact"},
+        "content": "检索" * 40,
+        "score": 90,
+    }
+    monkeypatch.setattr(server_module.bucket_mgr, "list_all", AsyncMock(return_value=[pinned, match]))
+    monkeypatch.setattr(server_module.bucket_mgr, "search", AsyncMock(return_value=[match]))
+    monkeypatch.setattr(server_module.bucket_mgr, "touch", AsyncMock(return_value=True))
+    monkeypatch.setattr(server_module.embedding_engine, "search_similar", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        server_module.dehydrator, "dehydrate", AsyncMock(side_effect=lambda content, _meta: content)
+    )
+    monkeypatch.setattr(server_module.random, "random", lambda: 1.0)
+
+    with_pinned = await server_module.breath(query="项目", max_results=3, max_tokens=900)
+    without_pinned = await server_module.breath(
+        query="项目", max_results=3, max_tokens=900, include_pinned=False
+    )
+
+    assert "[bucket_id:pinned-core]" in with_pinned
+    assert "[bucket_id:pinned-core]" not in without_pinned
+    assert "[bucket_id:search-match]" in without_pinned
+
+
+@pytest.mark.asyncio
+async def test_api_pinned_returns_only_pinned_within_domain(monkeypatch, server_module):
+    evan = {"id": "evan-pin", "metadata": {"pinned": True, "domain": ["tg-private"]}, "content": "A"}
+    other = {"id": "other-pin", "metadata": {"pinned": True, "domain": ["tg-gale"]}, "content": "B"}
+    plain = {"id": "plain", "metadata": {"domain": ["tg-private"]}, "content": "C"}
+    monkeypatch.setattr(server_module.bucket_mgr, "list_all", AsyncMock(return_value=[evan, other, plain]))
+    monkeypatch.setattr(
+        server_module.dehydrator, "dehydrate", AsyncMock(side_effect=lambda content, _meta: content)
+    )
+    from starlette.requests import Request as StarletteRequest
+
+    def req(query):
+        return StarletteRequest({"type": "http", "method": "GET", "path": "/api/pinned",
+                                 "query_string": query, "headers": []})
+
+    everything = json.loads((await server_module.api_pinned(req(b""))).body)
+    scoped = json.loads((await server_module.api_pinned(req(b"domain=tg-private"))).body)
+    assert everything["count"] == 2 and "plain" not in everything["text"]
+    assert scoped["count"] == 1 and "evan-pin" in scoped["text"] and "other-pin" not in scoped["text"]
