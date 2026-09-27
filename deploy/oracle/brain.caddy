@@ -1,0 +1,20 @@
+# Evan's site and MCP (2026-09-27). The app listens on loopback only.
+# Endpoints that are bot-only, internal, or unauthenticated maintenance are
+# not exposed: the bots on this host call them over 127.0.0.1.
+brain.mininicole.com {
+	encode zstd gzip
+
+	@internal path /api/recall /api/remember /api/pinned /api/schedule_message /api/handoff /api/handoff/* /api/reclassify /api/night_fall/* /breath-hook /dream-hook /auth/setup /oauth/* /.well-known/oauth* /gale-dash /gale-dash/* /g-*
+	respond @internal "not found" 404
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+
+	reverse_proxy 127.0.0.1:8800 {
+		# /chat and /mcp stream (SSE); do not buffer.
+		flush_interval -1
+	}
+}

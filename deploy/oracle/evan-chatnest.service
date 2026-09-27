@@ -1,0 +1,44 @@
+[Unit]
+Description=Evan ChatNest Oracle production (/chat backend, loopback only)
+Wants=evan-memory.service
+After=evan-memory.service
+
+[Service]
+Type=simple
+User=evan-memory
+Group=evan-memory
+EnvironmentFile=/etc/evan-memory.env
+# Same paths as the Fly image, so Claude CLI session transcripts (stored per
+# working-directory path under .claude/projects) resume without rewriting.
+BindPaths=/var/lib/evan-memory/data:/app/buckets
+BindReadOnlyPaths=/opt/evan-memory/current/chatnest:/app/chatnest
+Environment=AGENT_APP_ROOT=/app/buckets/chatnest
+Environment=MODELS_FILE=/app/chatnest/models.json
+Environment=CLAUDE_CONFIG_DIR=/app/buckets/.claude
+Environment=CLAUDE_SESSION_DIR=/app/buckets/.claude/projects
+Environment=OMBRE_MCP_URL=http://127.0.0.1:8800/mcp/
+Environment=EVAN_PROMPT_FILE=/app/buckets/chatnest/evan-prompt.md
+Environment=HOME=/var/cache/evan-chatnest
+Environment=PATH=/opt/evan-memory/claude-cli/node_modules/.bin:/usr/local/bin:/usr/bin:/bin
+CacheDirectory=evan-chatnest
+WorkingDirectory=/app/buckets/chatnest
+ExecStart=/opt/evan-memory/chatnest-venv/bin/python -m uvicorn app.main:app --app-dir /app/chatnest --host 127.0.0.1 --port 8787
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/evan-memory
+
+[Install]
+WantedBy=multi-user.target

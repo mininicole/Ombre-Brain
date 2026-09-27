@@ -1,0 +1,60 @@
+[Unit]
+Description=Evan Memory Oracle production (loopback only)
+Wants=network-online.target gale-bge-m3.service
+After=network-online.target gale-bge-m3.service
+
+[Service]
+Type=simple
+User=evan-memory
+Group=evan-memory
+WorkingDirectory=/opt/evan-memory/current
+EnvironmentFile=/etc/evan-memory.env
+Environment=OMBRE_HOST=127.0.0.1
+Environment=OMBRE_PORT=8800
+Environment=OMBRE_TRANSPORT=streamable-http
+Environment=OMBRE_BUCKETS_DIR=/var/lib/evan-memory/data
+Environment=OMBRE_EMBEDDING_BASE_URL=http://127.0.0.1:18810/v1
+Environment=OMBRE_EMBEDDING_MODEL=BAAI/bge-m3
+Environment=OMBRE_REQUIRE_AUTH=1
+Environment=OMBRE_ALLOW_QUERY_TOKEN=0
+# Evan-specific switches (see recall_time.legacy_gate_enabled, server._GALE_PROXY_ENABLED)
+Environment=OMBRE_TIME_GATE_LEGACY=off
+Environment=OMBRE_GALE_PROXY=off
+Environment=GALE_MCP_SLUG=
+# Dreams stay off (user decision 2026-09-23); thresholds kept from fly.toml.
+Environment=NIGHT_FALL_AUTO_HOUR_UTC=-1
+Environment=NIGHT_FALL_SURFACE_THRESHOLD=0.50
+Environment=NIGHT_FALL_ATTEMPT_THRESHOLD=0.35
+Environment=NIGHT_FALL_SPONTANEOUS_SURFACE_PROB=0.06
+Environment=NIGHT_FALL_GENERATION_COOLDOWN_HOURS=72
+Environment=NIGHT_FALL_SOURCE_COOLDOWN_GENERATIONS=2
+Environment=NIGHT_FALL_DUPLICATE_SIMHASH_DISTANCE=4
+Environment=OMBRE_HOOK_SKIP=1
+# Scheduled messages go to the bots on this host over loopback.
+Environment=EVAN_SEND_URL=http://127.0.0.1:10010/api/send
+Environment=GALE_SEND_URL=http://127.0.0.1:10000/api/send
+Environment=CHATNEST_PORT=8787
+Environment=OMBRE_HOME=/opt/evan-memory/current
+# The Night-Fall launcher also runs the 60s /health keepalive that drives
+# scheduled_message dispatch; dream generation stays off (AUTO_HOUR=-1).
+ExecStart=/opt/evan-memory/venv/bin/python /opt/evan-memory/current/ombre_nightfall_launcher.py
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/evan-memory
+
+[Install]
+WantedBy=multi-user.target
