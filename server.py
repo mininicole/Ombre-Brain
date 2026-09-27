@@ -2035,6 +2035,13 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
 
     candidate_by_id = {bucket["id"]: bucket for bucket in semantic_matches}
+    # The fuzzy keyword score saturates at 100 for any bucket containing a
+    # common word (今天, 那个...), so a raw 1.0 used to outrank every real
+    # semantic match (~0.6). When the semantic channel produced results,
+    # keyword-only hits are discounted and hits from both channels get a
+    # bonus (2026-09-27: a project bucket at lexical rank 4 / semantic rank 6
+    # lost to three unrelated full-score keyword hits).
+    semantic_available = bool(semantic_matches)
     for bucket in lexical_matches:
         # Older callers/tests may omit a numeric score even though bucket_mgr.search
         # has already established an exact keyword/name/tag match. Preserve that
@@ -2044,11 +2051,15 @@ async def breath(  # 2026-08-11 默认闸门 5000/5 → 4000/2；给钉桶外的
             lexical_score /= 100.0
         existing = candidate_by_id.get(bucket["id"])
         if existing is None:
-            bucket["semantic_score"] = round(lexical_score, 6)
+            weight = _LEXICAL_ONLY_WEIGHT if semantic_available else 1.0
+            bucket["semantic_score"] = round(lexical_score * weight, 6)
             bucket["lexical_only"] = True
             candidate_by_id[bucket["id"]] = bucket
         else:
             existing["lexical_score"] = round(lexical_score, 6)
+            existing["semantic_score"] = round(
+                min(1.0, float(existing["semantic_score"]) + _BOTH_CHANNELS_BONUS * lexical_score), 6
+            )
 
     ranked_matches = rerank_recall_candidates(
         candidate_by_id.values(),
@@ -4149,6 +4160,10 @@ async def chat_proxy(request):
 
 
 # --- Gale Dashboard：独立路径反代到独立记忆进程 ---
+# Recall channel merge (see breath search mode). Keyword-only hits are scaled
+# down when semantic search returned candidates; hits from both get a bonus.
+_LEXICAL_ONLY_WEIGHT = float(os.environ.get("OMBRE_LEXICAL_ONLY_WEIGHT", "0.55"))
+_BOTH_CHANNELS_BONUS = float(os.environ.get("OMBRE_BOTH_CHANNELS_BONUS", "0.1"))
 _GALE_DASH_BASE = "http://127.0.0.1:8790"
 # On Fly, 127.0.0.1:8790 is Gale's frozen copy inside the same Machine. On
 # Oracle the same port is Gale's production memory behind its own OAuth, so
