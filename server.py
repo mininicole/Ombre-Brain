@@ -1413,6 +1413,7 @@ async def api_remember(request):
             memory_lifecycle=str(body.get("memory_lifecycle") or ""),
             source_timestamp=str(body.get("source_timestamp") or ""),
             valid_until=str(body.get("valid_until") or ""),
+            allow_merge=bool(body.get("allow_merge", True)),
         )
         return JSONResponse({"id": result})
     except Exception as e:
@@ -1506,6 +1507,7 @@ async def _merge_or_create(
     memory_lifecycle: str = "event",
     source_timestamp: str = "",
     valid_until: str = "",
+    allow_merge: bool = True,
 ) -> tuple[str, bool]:
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
@@ -1514,7 +1516,12 @@ async def _merge_or_create(
     返回 (桶ID或名称, 是否合并)。
     """
     try:
-        existing = await bucket_mgr.search(content, limit=1, domain_filter=domain or None)
+        # allow_merge=False: always a new bucket (e.g. one diary per day must
+        # never be folded into whatever bucket the fuzzy search scores >75).
+        existing = (
+            await bucket_mgr.search(content, limit=1, domain_filter=domain or None)
+            if allow_merge else []
+        )
     except Exception as e:
         logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
         existing = []
@@ -2250,8 +2257,9 @@ async def hold(
     memory_lifecycle: str = "",
     source_timestamp: str = "",
     valid_until: str = "",
+    allow_merge: bool = True,
 ) -> str:
-    """存储单条记忆,自动打标+合并。memory_lifecycle 可显式指定 stable_fact/event/transient_state；普通调用由已有 analyze 步骤写入该字段，无法确定时按 transient_state 保守处理。transient 默认有效 48 小时，也可传绝对 valid_until。source_timestamp 为空时写当前 UTC。tags/domain逗号分隔,domain非空时覆盖自动主题。importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。quotes 可主动保留最多3句原话；普通浮现不会返回，只有 breath(query=..., quotes=True) 才会附上。"""
+    """存储单条记忆,自动打标+合并(allow_merge=False 时总是新建)。memory_lifecycle 可显式指定 stable_fact/event/transient_state；普通调用由已有 analyze 步骤写入该字段，无法确定时按 transient_state 保守处理。transient 默认有效 48 小时，也可传绝对 valid_until。source_timestamp 为空时写当前 UTC。tags/domain逗号分隔,domain非空时覆盖自动主题。importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。quotes 可主动保留最多3句原话；普通浮现不会返回，只有 breath(query=..., quotes=True) 才会附上。"""
     if memory_read_only():
         return _read_only_tool_result()
     await decay_engine.ensure_started()
@@ -2368,6 +2376,7 @@ async def hold(
         memory_lifecycle=final_lifecycle,
         source_timestamp=final_source_timestamp,
         valid_until=valid_until,
+        allow_merge=allow_merge,
     )
 
     action = "合并→" if is_merged else "新建→"

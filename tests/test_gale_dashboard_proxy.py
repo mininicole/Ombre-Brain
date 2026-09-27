@@ -595,6 +595,7 @@ async def test_api_remember_preserves_production_hold_contract(monkeypatch, serv
         memory_lifecycle="",
         source_timestamp="",
         valid_until="",
+        allow_merge=True,
     )
 
 
