@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>日记 · Ombre</title>
+<style>
+  :root {
+    --paper: #F0EEE6;
+    --paper-deep: #E8E5DB;
+    --ink: #1F1E1B;
+    --ink-soft: #5E5B53;
+    --ink-faint: #8E8A7E;
+    --clay: #C96442;
+    --rule: rgba(31, 30, 27, 0.14);
+    --serif: ui-serif, Georgia, "Times New Roman", "Songti SC", "Noto Serif SC", "SimSun", serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--paper); }
+  body { font-family: var(--serif); color: var(--ink); background: var(--paper); min-height: 100vh; -webkit-font-smoothing: antialiased; }
+  .page { max-width: 720px; margin: 0 auto; padding: 0 24px 96px; }
+
+  header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 12px; padding: 28px 0 16px; border-bottom: 1px solid var(--rule); }
+  .wordmark { font-size: 14px; letter-spacing: 0.22em; text-transform: uppercase; font-weight: 600; }
+  .wordmark span { color: var(--clay); }
+  nav { display: flex; gap: 22px; flex-wrap: wrap; }
+  nav a { font-size: 14px; color: var(--ink-soft); text-decoration: none; letter-spacing: 0.04em; border-bottom: 1px solid transparent; padding-bottom: 2px; }
+  nav a:hover { color: var(--ink); border-bottom-color: var(--clay); }
+  nav a.here { color: var(--ink); border-bottom-color: var(--clay); }
+
+  .page-title { padding: 48px 0 8px; text-align: center; }
+  .page-title h1 { font-size: 32px; font-weight: 500; letter-spacing: 0.1em; }
+  .page-title p { font-size: 13px; color: var(--ink-faint); margin-top: 10px; letter-spacing: 0.12em; }
+  .count { text-align: center; font-size: 12px; color: var(--ink-faint); letter-spacing: 0.16em; margin: 18px 0 40px; }
+
+  .month { font-size: 13px; font-weight: 600; letter-spacing: 0.22em; color: var(--clay); margin: 44px 0 20px; display: flex; align-items: center; gap: 14px; }
+  .month::after { content: ""; flex: 1; border-top: 1px solid var(--rule); }
+
+  .entry { border: 1px solid var(--rule); border-radius: 4px; margin-bottom: 22px; background: rgba(255,255,255,0.5); overflow: hidden; }
+  .entry .head { display: flex; justify-content: space-between; align-items: baseline; padding: 13px 22px; border-bottom: 1px solid var(--rule); }
+  .entry .date { font-size: 15px; font-weight: 600; letter-spacing: 0.08em; }
+  .entry .meta { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.12em; }
+  .entry .body { padding: 20px 22px 22px; font-size: 15px; line-height: 2.05; white-space: pre-wrap; word-break: break-word; }
+  .entry.folded .body { max-height: 12.3em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+  .entry .more { display: none; width: 100%; padding: 10px; border: none; border-top: 1px solid var(--rule); background: transparent; font-family: var(--serif); font-size: 13px; letter-spacing: 0.14em; color: var(--clay); cursor: pointer; }
+  .entry.folded .more { display: block; }
+  .entry.latest { background: var(--paper-deep); }
+  .entry.latest .date { color: var(--clay); }
+
+  .empty { font-size: 14px; color: var(--ink-faint); font-style: italic; text-align: center; padding: 48px 0; line-height: 2; white-space: pre-line; }
+
+  footer { margin-top: 72px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--ink-faint); letter-spacing: 0.14em; text-align: center; }
+
+  #auth-overlay { position: fixed; inset: 0; background: var(--paper); z-index: 99; display: none; align-items: center; justify-content: center; }
+  .auth-box { width: 320px; max-width: calc(100vw - 32px); text-align: center; }
+  .auth-box .wordmark { font-size: 16px; margin-bottom: 6px; display: block; }
+  .auth-box p { font-size: 13px; color: var(--ink-faint); margin-bottom: 28px; letter-spacing: 0.1em; }
+  .auth-box input { width: 100%; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 4px; background: rgba(255,255,255,0.6); font-family: var(--serif); font-size: 15px; outline: none; margin-bottom: 12px; }
+  .auth-box input:focus { border-color: var(--clay); }
+  .auth-box button { width: 100%; padding: 12px; background: var(--ink); color: var(--paper); border: none; border-radius: 4px; font-family: var(--serif); font-size: 14px; letter-spacing: 0.2em; cursor: pointer; }
+  .auth-box button:hover { background: var(--clay); }
+  #auth-error { display: none; margin-top: 14px; font-size: 13px; color: var(--clay); }
+
+  @media (max-width: 520px) {
+    .page { padding: 0 16px 72px; }
+    .page-title h1 { font-size: 26px; }
+    .entry .head, .entry .body { padding-left: 16px; padding-right: 16px; }
+  }
+</style>
+</head>
+<body>
+<div id="auth-overlay">
+  <div class="auth-box">
+    <span class="wordmark">OMBRE</span>
+    <p>这里只给深深看</p>
+    <input type="password" id="auth-pwd" placeholder="访问密码" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()">进门</button>
+    <div id="auth-error">不对。再想想。</div>
+  </div>
+</div>
+
+<div class="page">
+  <header>
+    <div class="wordmark">OMBRE<span> · 深深 &amp; EVAN</span></div>
+    <nav>
+      <a href="/">首页</a>
+      <a href="/letters">信箱</a>
+      <a href="/diary" class="here">日记</a>
+      <a href="/dashboard">Ombre</a>
+      <a href="/play">Playroll</a>
+    </nav>
+  </header>
+
+  <div class="page-title">
+    <h1>日记</h1>
+    <p>他替我们记下的每一天</p>
+  </div>
+  <div class="count" id="count"></div>
+
+  <div id="list"></div>
+
+  <footer>每天凌晨四点，他把前一天写进这里</footer>
+</div>
+
+<script>
+const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+function relative(dateStr) {
+  const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  const days = Math.round((Date.parse(today) - Date.parse(dateStr)) / 86400000);
+  if (days === 1) return '昨天';
+  if (days === 2) return '前天';
+  if (days > 2 && days < 7) return `${days} 天前`;
+  return '';
+}
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function render(diaries) {
+  const list = document.getElementById('list');
+  list.textContent = '';
+  document.getElementById('count').textContent = diaries.length ? `已经记了 ${diaries.length} 天` : '';
+  if (!diaries.length) {
+    list.appendChild(el('div', 'empty', '还没有日记。\n第一篇会在明天凌晨四点写好。'));
+    return;
+  }
+  let month = '';
+  diaries.forEach((d, i) => {
+    const [y, m, day] = d.date.split('-');
+    const key = `${y} · ${m}`;
+    if (key !== month) {
+      month = key;
+      list.appendChild(el('div', 'month', key));
+    }
+    const card = el('article', 'entry' + (i === 0 ? ' latest' : ''));
+    const head = el('div', 'head');
+    const weekday = WEEK[new Date(`${d.date}T12:00:00+08:00`).getDay()];
+    head.appendChild(el('span', 'date', `${Number(m)} 月 ${Number(day)} 日 · ${weekday}`));
+    head.appendChild(el('span', 'meta', relative(d.date)));
+    card.appendChild(head);
+    card.appendChild(el('div', 'body', d.text));
+    const more = el('button', 'more', '展开');
+    more.onclick = () => card.classList.remove('folded');
+    card.appendChild(more);
+    list.appendChild(card);
+    if (i > 0 && d.text.length > 180) card.classList.add('folded');
+  });
+}
+
+async function load() {
+  const r = await fetch('/api/diaries');
+  if (r.status === 401) { showAuth(); return; }
+  const data = await r.json();
+  render(data.diaries || []);
+}
+
+function showAuth() { document.getElementById('auth-overlay').style.display = 'flex'; }
+
+async function doLogin() {
+  const pwd = document.getElementById('auth-pwd').value;
+  const r = await fetch('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pwd }) });
+  if (r.ok) {
+    document.getElementById('auth-overlay').style.display = 'none';
+    load();
+  } else {
+    document.getElementById('auth-error').style.display = 'block';
+  }
+}
+
+async function init() {
+  try {
+    const r = await fetch('/auth/status');
+    const s = await r.json();
+    if (!s.authenticated) { showAuth(); return; }
+  } catch {}
+  load();
+}
+init();
+</script>
+</body>
+</html>

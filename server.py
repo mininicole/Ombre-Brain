@@ -40,6 +40,7 @@ import asyncio
 import hashlib
 import hmac
 import secrets
+import re
 import time
 import json as _json_lib
 import httpx
@@ -3845,6 +3846,41 @@ def _serve_site_file(relpath):
 @mcp.custom_route("/letters", methods=["GET"])
 async def letters_page(request):
     return _serve_site_file("letters.html")
+
+
+@mcp.custom_route("/diary", methods=["GET"])
+async def diary_page(request):
+    return _serve_site_file("diary.html")
+
+
+# Evan's daily private-chat diaries (written by evan-bot's memory keeper as
+# tg-private buckets tagged 日记). Site login required, newest first.
+_DIARY_HEADER = re.compile(r"^【(\d{4}-\d{2}-\d{2}) 日记】\s*")
+
+
+@mcp.custom_route("/api/diaries", methods=["GET"])
+async def api_diaries(request):
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    items = []
+    for b in await bucket_mgr.list_all(include_archive=True):
+        meta = b.get("metadata", {})
+        tags = meta.get("tags") or []
+        domains = meta.get("domain") or []
+        if isinstance(tags, str):
+            tags = [tags]
+        if isinstance(domains, str):
+            domains = [domains]
+        if "日记" not in tags or "tg-private" not in domains:
+            continue
+        text = str(b.get("content") or "").strip()
+        m = _DIARY_HEADER.match(text)
+        date = m.group(1) if m else str(meta.get("source_timestamp") or meta.get("created") or "")[:10]
+        items.append({"id": b["id"], "date": date, "text": text[m.end():] if m else text})
+    items.sort(key=lambda item: item["date"], reverse=True)
+    return JSONResponse({"diaries": items[:366]})
 
 
 @mcp.custom_route("/dashboard/evan", methods=["GET"])

@@ -1325,3 +1325,23 @@ async def test_api_pinned_returns_only_pinned_within_domain(monkeypatch, server_
     scoped = json.loads((await server_module.api_pinned(req(b"domain=tg-private"))).body)
     assert everything["count"] == 2 and "plain" not in everything["text"]
     assert scoped["count"] == 1 and "evan-pin" in scoped["text"] and "other-pin" not in scoped["text"]
+
+
+@pytest.mark.asyncio
+async def test_api_diaries_lists_private_diaries_newest_first(monkeypatch, server_module):
+    buckets = [
+        {"id": "d1", "metadata": {"tags": ["日记", "私聊"], "domain": ["tg-private"]}, "content": "【2026-09-27 日记】\n第一天"},
+        {"id": "d2", "metadata": {"tags": ["日记"], "domain": ["tg-private"]}, "content": "【2026-09-28 日记】\n第二天"},
+        {"id": "gale", "metadata": {"tags": ["日记"], "domain": ["tg-gale"]}, "content": "【2026-09-28 日记】\nGale"},
+        {"id": "plain", "metadata": {"tags": ["项目"], "domain": ["tg-private"]}, "content": "不是日记"},
+    ]
+    monkeypatch.setattr(server_module.bucket_mgr, "list_all", AsyncMock(return_value=buckets))
+    monkeypatch.setattr(server_module, "_is_authenticated", lambda request: True)
+    from starlette.requests import Request as StarletteRequest
+    request = StarletteRequest({"type": "http", "method": "GET", "path": "/api/diaries", "query_string": b"", "headers": []})
+    data = json.loads((await server_module.api_diaries(request)).body)
+    assert [d["id"] for d in data["diaries"]] == ["d2", "d1"]
+    assert data["diaries"][0] == {"id": "d2", "date": "2026-09-28", "text": "第二天"}
+
+    monkeypatch.setattr(server_module, "_is_authenticated", lambda request: False)
+    assert (await server_module.api_diaries(request)).status_code == 401
