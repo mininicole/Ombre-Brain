@@ -13,6 +13,25 @@ brain.mininicole.com {
 		Referrer-Policy "no-referrer"
 	}
 
+	# Evan's model switching page (2026-09-29), served by evan-bot on 127.0.0.1:18830.
+	# Same login as the rest of this site: Caddy asks Ombre whether the ombre_session
+	# cookie is valid (/api/import/status is a cheap auth-guarded GET) and sends
+	# anyone not logged in back to the home page to log in.
+	@models path /admin/providers /admin/api/*
+	handle @models {
+		forward_auth 127.0.0.1:8800 {
+			uri /api/import/status
+			@denied status 401 403
+			handle_response @denied {
+				redir / 302
+			}
+		}
+		reverse_proxy 127.0.0.1:18830 {
+			header_up X-Provider-Authenticated-User nicole
+			header_up -Cookie
+		}
+	}
+
 	reverse_proxy 127.0.0.1:8800 {
 		# /chat and /mcp stream (SSE); do not buffer.
 		flush_interval -1
