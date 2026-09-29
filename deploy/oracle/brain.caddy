@@ -23,7 +23,8 @@ brain.mininicole.com {
 			uri /api/import/status
 			@denied status 401 403
 			handle_response @denied {
-				redir / 302
+				# "redir / 302" would read "/" as a path matcher and never fire; * makes it apply everywhere
+				redir * / 302
 			}
 		}
 		reverse_proxy 127.0.0.1:18830 {
