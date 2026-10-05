@@ -2832,8 +2832,56 @@ _PULSE_EVENTS_LIMIT = 12
 _PULSE_NOTE_TTL_MS = 2 * 3600 * 1000  # mood 覆写自动 tag 的有效期
 _PULSE_NOTES_LIMIT = 12  # 心情年轮保留条数
 
+# --- 与 evan-bot 同步的情绪数学（改这里要同步 evan-bot/server.mjs）---
+# 思慕朝"挂念目标"走：她刚走 0.40，8h 0.63，24h 0.80；她来一次满足一截。
+_PULSE_LONGING_FLOOR = 0.40
+_PULSE_LONGING_SPAN = 0.45
+_PULSE_LONGING_HALF_HOURS = 8.0
+_PULSE_SATISFIED = 0.35
+_PULSE_SATISFY_KEEP = 0.6
+_PULSE_DAILY_DECAY = 0.75
+_PULSE_DAILY_MIN_MULT = 0.2
 
-async def _pulse_write(deltas: dict, msg: str = "", mood: str = "", source: str = "cc") -> "str | None":
+
+def _pulse_parse_ts(s):
+    from datetime import datetime, timezone
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _pulse_decay(saved: dict, now_utc) -> dict:
+    """saved=gist 里的 pulse_base 原样；返回衰减到 now_utc 的 9 维 base。"""
+    base = dict(_PULSE_DEFAULTS)
+    for k in _PULSE_DIMS:
+        if isinstance(saved.get(k), (int, float)):
+            base[k] = max(0.0, min(1.0, float(saved[k])))
+    upd = _pulse_parse_ts(saved.get("_updated_at"))
+    her = _pulse_parse_ts(saved.get("_last_her_at")) or upd
+    if not upd:
+        return base
+    elapsed = max(0.0, (now_utc - upd).total_seconds() / 3600.0)
+    absent = max(0.0, (now_utc - her).total_seconds() / 3600.0)
+    factor = pow(0.5, elapsed / _PULSE_HALF_LIFE_HOURS)
+    for k in _PULSE_DIMS:
+        if k == "思慕":
+            neutral = _PULSE_LONGING_FLOOR + _PULSE_LONGING_SPAN * (1 - pow(0.5, absent / _PULSE_LONGING_HALF_HOURS))
+        else:
+            neutral = 0.25 if k in _PULSE_THREAT_KEYS else 0.45
+        base[k] = max(0.0, min(1.0, neutral + (base[k] - neutral) * factor))
+    return base
+
+
+def _pulse_soft_scale(v: float, d: float) -> float:
+    """越靠近顶越难涨，越靠近底越难落。"""
+    return d * min(1.0, (1 - v) / 0.5) if d > 0 else d * min(1.0, v / 0.5)
+
+
+async def _pulse_write(deltas: dict, msg: str = "", mood: str = "", source: str = "cc", her: bool = False) -> "str | None":
     """读 state gist → 按 3h 半衰期衰减 → 应用 deltas/事件/心情 → 写回。
 
     beat 工具和 /api/poke 共用。成功返回 None，失败返回错误描述。
@@ -2862,32 +2910,44 @@ async def _pulse_write(deltas: dict, msg: str = "", mood: str = "", source: str 
             now_utc = datetime.now(timezone.utc)
             now_ms = int(now_utc.timestamp() * 1000)
 
-            if deltas:
+            if deltas or her:
                 saved = state.get("pulse_base") or {}
-                base = dict(_PULSE_DEFAULTS)
-                for k in _PULSE_DIMS:
-                    if isinstance(saved.get(k), (int, float)):
-                        base[k] = max(0.0, min(1.0, saved[k]))
-                # 先衰减到此刻(与 evan-bot 一致),再加 delta
-                elapsed_hours = 0.0
-                updated_at_str = saved.get("_updated_at")
-                if updated_at_str:
-                    try:
-                        s = updated_at_str.replace("Z", "+00:00")
-                        prev = datetime.fromisoformat(s)
-                        if prev.tzinfo is None:
-                            prev = prev.replace(tzinfo=timezone.utc)
-                        elapsed_hours = max(0.0, (now_utc - prev).total_seconds() / 3600.0)
-                    except Exception:
-                        pass
-                factor = pow(0.5, elapsed_hours / _PULSE_HALF_LIFE_HOURS)
-                for k in _PULSE_DIMS:
-                    neutral = 0.25 if k in _PULSE_THREAT_KEYS else 0.45
-                    base[k] = max(0.0, min(1.0, neutral + (base[k] - neutral) * factor))
+                base = _pulse_decay(saved, now_utc)
+                last_her = saved.get("_last_her_at") or saved.get("_updated_at")
+                if her:
+                    # 她来了（戳一下）：思慕被满足一截
+                    if base["思慕"] > _PULSE_SATISFIED:
+                        base["思慕"] = _PULSE_SATISFIED + (base["思慕"] - _PULSE_SATISFIED) * _PULSE_SATISFY_KEEP
+                    last_her = now_utc.isoformat().replace("+00:00", "Z")
+                today = _cn_now().strftime("%Y-%m-%d")
+                daily = state.get("pulse_daily") or {}
+                if daily.get("date") != today:
+                    daily = {"date": today, "n": {}, "gain": {}}
+                daily.setdefault("n", {})
+                daily.setdefault("gain", {})
+                applied = {}
                 for k, v in deltas.items():
-                    base[k] = max(0.0, min(1.0, base[k] + v))
+                    d = float(v)
+                    if d > 0:
+                        n = daily["n"].get(k, 0)
+                        gain = daily["gain"].get(k, 0.0)
+                        cap = 0.35 if k in _PULSE_THREAT_KEYS else 0.45
+                        d *= max(_PULSE_DAILY_MIN_MULT, pow(_PULSE_DAILY_DECAY, n))
+                        d = min(d, max(0.0, cap - gain))
+                    d = _pulse_soft_scale(base[k], d)
+                    if abs(d) < 0.005:
+                        continue
+                    base[k] = max(0.0, min(1.0, base[k] + d))
+                    if d > 0:
+                        daily["n"][k] = daily["n"].get(k, 0) + 1
+                        daily["gain"][k] = daily["gain"].get(k, 0.0) + d
+                    applied[k] = round(d, 3)
+                deltas = applied
                 base["_updated_at"] = now_utc.isoformat().replace("+00:00", "Z")
+                if last_her:
+                    base["_last_her_at"] = last_her
                 state["pulse_base"] = base
+                state["pulse_daily"] = daily
 
             if msg:
                 events = state.get("pulse_events") or []
@@ -3966,32 +4026,8 @@ async def api_state(request):
                 r.raise_for_status()
                 content = r.json().get("files", {}).get("state.json", {}).get("content", "{}")
             state = _json_lib.loads(content)
-            saved_base = state.get("pulse_base") or {}
-            for k in PHASE:
-                if isinstance(saved_base.get(k), (int, float)):
-                    base[k] = max(0.0, min(1.0, saved_base[k]))
-            # 衰减：base 朝 neutral 半衰期 3h——evan-bot 每次写 base 时记的 _updated_at
-            # 是事件发生时刻。读到现在，根据时差衰减一下，把"不聊话期间应该自然落下"算上。
-            updated_at_str = saved_base.get("_updated_at")
-            if updated_at_str:
-                try:
-                    if updated_at_str.endswith("Z"):
-                        updated_at_str = updated_at_str.replace("Z", "+00:00")
-                    updated_at_dt = _dt.fromisoformat(updated_at_str)
-                    if updated_at_dt.tzinfo is None:
-                        from datetime import timezone as _tz
-                        updated_at_dt = updated_at_dt.replace(tzinfo=_tz.utc)
-                    from datetime import timezone as _tz
-                    now_utc = _dt.now(_tz.utc)
-                    elapsed_hours = max(0.0, (now_utc - updated_at_dt).total_seconds() / 3600.0)
-                    HALF_LIFE_HOURS = 3.0
-                    factor = pow(0.5, elapsed_hours / HALF_LIFE_HOURS)
-                    threat_keys = {"妒意", "焦虑", "护卫"}
-                    for k in PHASE:
-                        neutral = 0.25 if k in threat_keys else 0.45
-                        base[k] = max(0.0, min(1.0, neutral + (base[k] - neutral) * factor))
-                except Exception:
-                    pass
+            from datetime import timezone as _tz
+            base = _pulse_decay(state.get("pulse_base") or {}, _dt.now(_tz.utc))
             events = state.get("pulse_events") or []
             note = state.get("pulse_note") or None
             notes = state.get("pulse_notes") or []
@@ -4109,8 +4145,8 @@ async def api_poke(request):
         return JSONResponse({"ok": False, "msg": random.choice(_POKE_COOLDOWN_MSGS)}, status_code=429)
     _poke_state["last"] = now
     msg = random.choice(_POKE_MSGS)
-    deltas = {"思慕": 0.05, "亲密": 0.04, "活力": 0.02}
-    e = await _pulse_write(deltas, msg=msg, source="poke")
+    deltas = {"亲密": 0.04, "活力": 0.02}
+    e = await _pulse_write(deltas, msg=msg, source="poke", her=True)
     if e:
         return JSONResponse({"ok": False, "msg": f"没戳到: {e}"}, status_code=500)
     return JSONResponse({"ok": True, "msg": msg})
