@@ -17,7 +17,8 @@ brain.mininicole.com {
 	# Same login as the rest of this site: Caddy asks Ombre whether the ombre_session
 	# cookie is valid (/api/import/status is a cheap auth-guarded GET) and sends
 	# anyone not logged in back to the home page to log in.
-	@models path /admin/providers /admin/api/*
+	# Evan's gallery (2026-10-06): same login, served by evan-bot's admin port; shares pictures with the Telegram gallery.
+	@models path /admin/providers /admin/api/* /admin/gallery /admin/gallery/api
 	handle @models {
 		forward_auth 127.0.0.1:8800 {
 			uri /api/import/status
