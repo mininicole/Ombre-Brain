@@ -389,13 +389,13 @@
     </div>
 
     <div class="b-card b-murmurs">
-      <div class="b-label">Dirty Talk<span class="zh">黑话</span></div>
+      <div class="b-label">He says</div>
       <div class="now-row" id="now-row" style="display:none;">
         <span class="tag">此刻</span>
         <span class="txt" id="bio-text"></span>
       </div>
       <div class="quote-add">
-        <textarea id="quote-input" rows="2" placeholder="他又说什么浑话了，记下来"></textarea>
+        <textarea id="quote-input" rows="2" placeholder="他又说了什么，记下来"></textarea>
         <div class="quote-add-row">
           <input type="date" id="quote-date">
           <select id="quote-source">
@@ -581,7 +581,7 @@ async function loadQuotes() {
     const data = await r.json();
     const quotes = data.quotes || [];
     if (!quotes.length) {
-      box.innerHTML = '<div class="empty">还没收藏。他下次说浑话的时候，截下来。</div>';
+      box.innerHTML = '<div class="empty">还没收藏。他下次说出经典的话，记下来。</div>';
       return;
     }
     box.innerHTML = quotes.map(q => {
