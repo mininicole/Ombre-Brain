@@ -61,9 +61,8 @@
     0 8px 22px rgba(0, 0, 0, 0.045);
 }
 
-/* —— 暗色模式（2026-10-14 深深要固定浅色，整块停用；想恢复把 not all 改回 (prefers-color-scheme: dark)） —— */
-@media not all {
-  :root {
+/* —— 暗色模式（2026-10-14 改为页面侧边栏按钮切换：html.theme-dark，默认浅色） —— */
+:root.theme-dark {
     --bg-primary:    #20201F;            /* dark theme */
     --bg-surface:    #181818;            /* 输入框/浮层：取自 IMG_4126，比背景更深 */
     --bubble-user:   #111111;            /* 用户消息气泡：取自官端，比背景更深 */
@@ -77,4 +76,3 @@
     --shadow-composer: var(--shadow-soft);  /* 暗色暂不加 halo，保持原观感 */
     /* --accent 不变：accent orange在两种模式下一致 */
   }
-}
