@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import urllib.error
 import urllib.request
 from collections.abc import AsyncGenerator, Callable
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from claude_agent_sdk import (
     AssistantMessage,
-    ClaudeAgentOptions,
+    ClaudeAgentOptions as _SDKAgentOptions,
     ClaudeSDKClient,
     ResultMessage,
     get_session_info,
@@ -25,6 +26,16 @@ from app.registry import get_registry
 
 
 _haiku_sem = asyncio.Semaphore(2)
+
+# SDK 自带的 Claude Code 跟不上新模型（2026-10-14：自带 2.1.173，Opus 5.5 要 >=2.1.280，
+# 网页聊天每条都回"does not support this model"）。有 CLAUDE_CLI_PATH 或 PATH 里有 claude 就用那个。
+CLAUDE_CLI_PATH = os.environ.get("CLAUDE_CLI_PATH") or shutil.which("claude")
+
+
+def ClaudeAgentOptions(**kwargs) -> _SDKAgentOptions:
+    if CLAUDE_CLI_PATH:
+        kwargs.setdefault("cli_path", CLAUDE_CLI_PATH)
+    return _SDKAgentOptions(**kwargs)
 
 logger = logging.getLogger(__name__)
 
