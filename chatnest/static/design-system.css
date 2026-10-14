@@ -61,8 +61,8 @@
     0 8px 22px rgba(0, 0, 0, 0.045);
 }
 
-/* —— 暗色模式 —— */
-@media (prefers-color-scheme: dark) {
+/* —— 暗色模式（2026-10-14 深深要固定浅色，整块停用；想恢复把 not all 改回 (prefers-color-scheme: dark)） —— */
+@media not all {
   :root {
     --bg-primary:    #20201F;            /* dark theme */
     --bg-surface:    #181818;            /* 输入框/浮层：取自 IMG_4126，比背景更深 */
