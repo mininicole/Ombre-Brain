@@ -39,7 +39,8 @@ def ClaudeAgentOptions(**kwargs) -> _SDKAgentOptions:
 
 logger = logging.getLogger(__name__)
 
-MEMORY_SEARCH_URL = os.environ.get("MEMORY_SEARCH_URL", "http://127.0.0.1:3900/search")
+# 2026-10-14：本地回忆搜索服务（memory_search_service）从没部署过，Evan 走 ombre 记忆；默认关，设了 MEMORY_SEARCH_URL 才查。
+MEMORY_SEARCH_URL = os.environ.get("MEMORY_SEARCH_URL", "")
 MEMORY_SEARCH_TOP_K = 6
 MEMORY_SEARCH_BUDGET_CHARS = 1500
 MEMORY_SEARCH_TIMEOUT_S = 2.0
@@ -48,7 +49,7 @@ memlog = logging.getLogger("memory.inject")
 
 async def fetch_memory_hits(query: str) -> str:
     """POST to local hybrid-search service. Silent-fail on any error."""
-    if not query.strip():
+    if not MEMORY_SEARCH_URL or not query.strip():
         return ""
 
     def _call() -> dict | None:

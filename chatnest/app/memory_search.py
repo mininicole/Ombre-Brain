@@ -11,7 +11,8 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
-SEARCH_URL = os.environ.get("MEMORY_SEARCH_URL", "http://127.0.0.1:3900/search")
+# 2026-10-14：本地回忆搜索服务（memory_search_service）从没部署过，Evan 走 ombre 记忆；默认关，设了 MEMORY_SEARCH_URL 才查。
+SEARCH_URL = os.environ.get("MEMORY_SEARCH_URL", "")
 TIMEOUT = 1.5  # seconds — bail out rather than block the chat
 MIN_QUERY_CHARS = 4
 
@@ -19,7 +20,7 @@ MIN_QUERY_CHARS = 4
 def recall(query: str, budget_chars: int = 2000, top_k: int = 8) -> str:
     """Query the memory search service. Returns joined text or '' on failure."""
     q = (query or "").strip()
-    if len(q) < MIN_QUERY_CHARS:
+    if not SEARCH_URL or len(q) < MIN_QUERY_CHARS:
         return ""
     try:
         payload = json.dumps(
