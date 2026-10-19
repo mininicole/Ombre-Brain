@@ -3806,8 +3806,8 @@ async def api_forget(request):
 
 @mcp.custom_route("/api/edit/{bucket_id}", methods=["POST"])
 async def api_edit(request):
-    """编辑一条记忆的正文/标题/标签。POST /api/edit/{bucket_id}
-    Body: {"content": "...", "name": "...", "tags": "a,b"}（都可选，只传需改的）"""
+    """编辑一条记忆的正文/标题/标签/钉选。POST /api/edit/{bucket_id}
+    Body: {"content": "...", "name": "...", "tags": "a,b", "pinned": true}（都可选，只传需改的）"""
     from starlette.responses import JSONResponse
     err = _require_auth(request)
     if err: return err
@@ -3829,6 +3829,9 @@ async def api_edit(request):
         if isinstance(tags_val, str):
             tags_val = [t.strip() for t in tags_val.split(",") if t.strip()]
         updates["tags"] = tags_val
+    if isinstance(body.get("pinned"), bool):
+        # 同 trace(pinned=0/1)：钉上会移进 permanent/、importance 锁 10；取消只摘标记
+        updates["pinned"] = body["pinned"]
     if not updates:
         return JSONResponse({"error": "no editable fields provided"}, status_code=400)
 

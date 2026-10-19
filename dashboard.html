@@ -1165,7 +1165,7 @@ function renderBuckets(buckets) {
     var timeAgo = formatTimeAgo(b.last_active || b.created);
     return '<div class="bucket-row">' +
       '<input type="checkbox" class="row-check" data-id="' + b.id + '" onclick="event.stopPropagation();onRowCheck();" style="cursor:pointer;" />' +
-      '<span class="icon" onclick="showDetail(\'' + b.id + '\')">' + icon + '</span>' +
+      '<span class="icon" title="' + (b.pinned ? '点击取消钉选' : '点击钉选') + '" style="cursor:pointer;" onclick="event.stopPropagation();togglePin(\'' + b.id + '\',' + (b.pinned ? 'false' : 'true') + ')">' + icon + '</span>' +
       '<span class="name" title="' + esc(b.name) + '" onclick="showDetail(\'' + b.id + '\')">' + esc(b.name) + '</span>' +
       '<span class="domain" onclick="showDetail(\'' + b.id + '\')">' + (b.domain || []).join(', ') + '</span>' +
       '<span class="emotion" onclick="showDetail(\'' + b.id + '\')"><span class="v-bar"><span class="v-dot" style="left:' + vPos + '%"></span></span>' + modelV + '</span>' +
@@ -1231,6 +1231,27 @@ async function batchDelete() {
   alert('删除完成：成功 ' + ok + (fail ? '，失败 ' + fail : ''));
 }
 
+async function togglePin(id, pin) {
+  var b = allBuckets.find(function(x) { return x.id === id; });
+  var name = b ? b.name : id;
+  var msg = pin
+    ? '钉选「' + name + '」？\n钉选后每次对话都会带上它，不会衰减。'
+    : '取消钉选「' + name + '」？\n之后不再每次都带上，但记忆还在，搜得到。';
+  if (!confirm(msg)) return;
+  try {
+    var res = await authFetch(DASH_BASE + '/api/edit/' + id, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pinned: pin })
+    });
+    var data = await res.json();
+    if (!res.ok || !data.ok) throw new Error((data && data.error) ? data.error : '操作失败');
+    await loadBuckets();
+    var panel = document.getElementById('detail-panel');
+    if (panel && panel.classList.contains('open')) showDetail(id);
+  } catch (e) {
+    alert((pin ? '钉选' : '取消钉选') + '失败: ' + e.message);
+  }
+}
+
 async function saveEdit(id) {
   var nameEl = document.getElementById('edit-name');
   var tagsEl = document.getElementById('edit-tags');
@@ -1287,7 +1308,8 @@ async function showDetail(id) {
         '<div class="field"><label>激活次数</label>' + (meta.activation_count || 1) + '</div>' +
         '<div class="field"><label>已解决</label>' + (meta.resolved ? '✓' : '—') + '</div>' +
         '<div class="field"><label>已消化</label>' + (meta.digested ? '✓' : '—') + '</div>' +
-        '<div class="field"><label>钉选</label>' + (meta.pinned ? '✓' : '—') + '</div>' +
+        '<div class="field"><label>钉选</label>' + (meta.pinned ? '✓' : '—') +
+          ' <button onclick="togglePin(\'' + id + '\',' + (meta.pinned ? 'false' : 'true') + ')" style="margin-left:6px;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:6px;padding:1px 8px;font-size:11px;cursor:pointer;">' + (meta.pinned ? '取消钉选' : '钉选') + '</button></div>' +
         '<div class="field"><label>创建</label>' + (meta.created || '—') + '</div>' +
         '<div class="field"><label>最后活跃</label>' + (meta.last_active || '—') + '</div>' +
       '</div>' +
