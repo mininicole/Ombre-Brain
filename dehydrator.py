@@ -178,6 +178,13 @@ class Dehydrator:
         self.base_url = dehy_cfg.get("base_url", "https://api.deepseek.com/v1")
         self.max_tokens = dehy_cfg.get("max_tokens", 1024)
         self.temperature = dehy_cfg.get("temperature", 0.1)
+        # 2026-10-19：deepseek-v4-flash 默认先"思考"，思考的 token 也算进 max_tokens——1024 里思考吃掉约 850，
+        # 正文只剩一百多个 token：压缩版 JSON 写一半就断、合并把桶内容截短、打标（256）几乎全失败、桶只剩 id 当名字。
+        # 这几件都是机械活，不需要思考：DeepSeek 接口一律关掉思考。别家接口不认这个参数，就不发。
+        # OMBRE_DEHYDRATION_THINKING / dehydration.thinking：auto（默认：DeepSeek 关，别家不动）| off | on
+        self.thinking = str(
+            os.environ.get("OMBRE_DEHYDRATION_THINKING") or dehy_cfg.get("thinking") or "auto"
+        ).strip().lower()
 
         # --- API availability / 是否有可用的 API ---
         self.api_available = bool(self.api_key)
@@ -324,6 +331,48 @@ class Dehydrator:
             raise RuntimeError(f"API 合并失败，请检查 API 连接: {e}") from e
 
     # ---------------------------------------------------------
+    # One chat call shared by every API method below
+    # 下面几个 API 方法共用的一次调用
+    # ---------------------------------------------------------
+    def _thinking_off(self) -> bool:
+        """Whether to send thinking=disabled (checked per call: /api/config can hot-swap base_url)."""
+        if self.thinking == "off":
+            return True
+        return self.thinking == "auto" and "deepseek.com" in str(self.base_url or "")
+
+    async def _complete(self, system: str, user: str, max_tokens: int, temperature: float) -> tuple[str, bool]:
+        """
+        Returns (text, truncated). An answer cut off at max_tokens is retried once with 4x the room;
+        if it is still cut off, truncated=True and the caller must not store it as if it were whole.
+        返回 (正文, 是否被截断)。写到上限被截断的重试一次（额度放宽 4 倍），还截断就标出来，调用方别当完整结果存。
+        """
+        budget = max_tokens
+        text = ""
+        for attempt in range(2):
+            kwargs = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "max_tokens": budget,
+                "temperature": temperature,
+            }
+            if self._thinking_off():
+                kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            response = await self.client.chat.completions.create(**kwargs)
+            if not response.choices:
+                return "", False
+            choice = response.choices[0]
+            text = choice.message.content or ""
+            if choice.finish_reason != "length":
+                return text, False
+            if attempt == 0:
+                logger.warning(f"模型输出写到上限被截断（max_tokens={budget}），放宽到 {min(budget * 4, 8192)} 重试一次")
+                budget = min(budget * 4, 8192)
+        return text, True
+
+    # ---------------------------------------------------------
     # API call: dehydration
     # API 调用：脱水压缩
     # ---------------------------------------------------------
@@ -332,18 +381,12 @@ class Dehydrator:
         Call LLM API for intelligent dehydration (via OpenAI-compatible client).
         调用 LLM API 执行智能脱水。
         """
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": DEHYDRATE_PROMPT},
-                {"role": "user", "content": content[:3000]},
-            ],
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-        )
-        if not response.choices:
+        text, truncated = await self._complete(DEHYDRATE_PROMPT, content[:3000], self.max_tokens, self.temperature)
+        if truncated:
+            # 半截的压缩版比原文还糟：返回空，dehydrate() 会改用原文
+            logger.warning("脱水结果被截断，改用原文")
             return ""
-        return response.choices[0].message.content or ""
+        return text
 
     # ---------------------------------------------------------
     # API call: merge
@@ -355,18 +398,12 @@ class Dehydrator:
         调用 LLM API 执行智能合并。
         """
         user_msg = f"旧记忆：\n{old_content[:2000]}\n\n新内容：\n{new_content[:2000]}"
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": MERGE_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-        )
-        if not response.choices:
-            return ""
-        return response.choices[0].message.content or ""
+        # 合并结果可以有旧记忆的 120%（最长两千多字），1024 本来就装不下长桶
+        text, truncated = await self._complete(MERGE_PROMPT, user_msg, max(self.max_tokens, 4096), self.temperature)
+        if truncated:
+            # 截断的合并结果会覆盖掉桶里原来的内容：宁可不合并（调用方会改成新建桶）
+            raise RuntimeError("API 合并结果被截断，不写入")
+        return text
 
 
 
@@ -470,18 +507,11 @@ class Dehydrator:
         Call LLM API for content analysis / tagging.
         调用 LLM API 执行内容分析打标。
         """
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": ANALYZE_PROMPT},
-                {"role": "user", "content": content[:2000]},
-            ],
-            max_tokens=256,
-            temperature=0.1,
-        )
-        if not response.choices:
+        # 256 装不下 10~15 个标签的 JSON（何况还要扣思考）：给 1024，实际只按写出来的计费
+        raw, truncated = await self._complete(ANALYZE_PROMPT, content[:2000], 1024, 0.1)
+        if truncated:
+            logger.warning("打标结果被截断，用默认值")
             return self._default_analysis()
-        raw = response.choices[0].message.content or ""
         if not raw.strip():
             return self._default_analysis()
         return self._parse_analysis(raw)
@@ -587,18 +617,10 @@ class Dehydrator:
         Call LLM API for diary organization.
         调用 LLM API 执行日记整理。
         """
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": DIGEST_PROMPT},
-                {"role": "user", "content": content[:5000]},
-            ],
-            max_tokens=2048,
-            temperature=0.0,
-        )
-        if not response.choices:
+        raw, truncated = await self._complete(DIGEST_PROMPT, content[:5000], 4096, 0.0)
+        if truncated:
+            logger.warning("日记整理结果被截断，不拆分")
             return []
-        raw = response.choices[0].message.content or ""
         if not raw.strip():
             return []
         return self._parse_digest(raw)
